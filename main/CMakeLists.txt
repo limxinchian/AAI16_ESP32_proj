@@ -2,5 +2,9 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES dht22_moisture_sensor
+    PRIV_REQUIRES
+        dht22_moisture_sensor
+        wifi_manager
+        mqtt_manager
+        esp_timer
 )
