@@ -69,6 +69,7 @@ void rc522_reader_start(void)
     sensor_status_configure(SENSOR_RC522, "rc522", true);
     sensor_status_record_init(SENSOR_RC522, ESP_FAIL);
 }
+TaskHandle_t rc522_reader_task_handle(void) { return NULL; }
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }

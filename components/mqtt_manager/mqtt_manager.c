@@ -60,6 +60,9 @@ typedef struct {
 static const config_rule_t s_config_rules[] = {
     {SENSOR_DHT22, "dht22", 2000, 10000},
     {SENSOR_GY511, "gy511", 500, 10000},
+    // Keep the verified 200 ms minimum; cap slow polling at 2 s because both
+    // detection latency and the three-idle-poll removal filter scale with it.
+    {SENSOR_RC522, "rc522", 200, 2000},
 };
 
 static const config_rule_t *config_rule_for_id(sensor_id_t id)

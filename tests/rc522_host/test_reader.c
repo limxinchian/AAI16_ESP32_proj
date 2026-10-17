@@ -27,20 +27,25 @@ esp_err_t rc522_sensor_init(void) { init_calls++; return !strcmp(scenario, "init
 BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
                       void *arg, unsigned priority, TaskHandle_t *handle)
 {
-    assert(!strcmp(name, "rc522_reader") && stack == 4096 && priority == 3 && !handle);
+    assert(!strcmp(name, "rc522_reader") && stack == 4096 && priority == 3 && handle);
     if (!strcmp(scenario, "task")) return pdFALSE;
+    *handle = (TaskHandle_t)1;
     created = entry; return pdPASS;
 }
 void vTaskDelete(TaskHandle_t task) { assert(!task); deleted++; longjmp(stopped, 1); }
 TickType_t xTaskGetTickCount(void) { return test_now_us / 10000; }
-void vTaskDelayUntil(TickType_t *wake, TickType_t period)
+BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
+                          uint32_t *value, TickType_t wait)
 {
-    assert(period == pdMS_TO_TICKS(200));
-    *wake += period;
-    assert(*wake * 10000LL > test_now_us);
-    test_now_us = *wake * 10000LL;
+    assert(clear_entry == 0 && clear_exit == UINT32_MAX);
+    if (!wait) return pdFALSE;
+    assert(wait == pdMS_TO_TICKS(200));
+    test_now_us += wait * 10000LL;
     if (test_now_us >= stop_us) longjmp(stopped, 1);
+    return pdFALSE;
 }
+esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update) { assert(false); return ESP_FAIL; }
+esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const char *reason) { assert(false); return ESP_FAIL; }
 esp_err_t rc522_sensor_poll(rc522_uid_t *uid, bool *present)
 {
     assert(polls < 64 && sensor_status_can_sample(SENSOR_RC522));
@@ -65,9 +70,11 @@ int main(int argc, char **argv)
 {
     assert(argc == 2); scenario = argv[1];
     rc522_reader_start();
+    assert(!rc522_reader_task_handle()); // Not usable before the worker initializes.
     if (created && !setjmp(stopped)) created(NULL);
     sensor_status_t status;
     assert(sensor_status_get(SENSOR_RC522, &status));
+    assert(rc522_reader_task_handle() == (status.initialized ? (TaskHandle_t)1 : NULL));
     if (!strcmp(scenario, "spi_init") || !strcmp(scenario, "task")) {
         assert(!created && !init_calls && status.state == SENSOR_UNAVAILABLE);
         assert(status.error_stage == (!strcmp(scenario, "spi_init") ? SENSOR_STAGE_DEPENDENCY : SENSOR_STAGE_TASK));

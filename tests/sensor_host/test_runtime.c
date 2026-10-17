@@ -1,7 +1,8 @@
-// Two real application loops with deterministic, cooperative host scheduling.
+// Three real application loops with deterministic, cooperative host scheduling.
 // pthreads provide separate C stacks; only one simulated task runs at a time.
 // This tests dispatch interleavings, not ESP32 SMP timing or the MQTT transport.
 #include "platform.h"
+#include "../rc522_host/platform.h"
 #include <assert.h>
 #include <pthread.h>
 #include <string.h>
@@ -9,16 +10,17 @@
 static int quiet_printf(const char *format, ...) { return 0; }
 #define printf quiet_printf
 #include "../../main/main.c"
+#include "../../main/rc522_reader.c"
 #undef printf
 
 typedef struct {
     pthread_t thread;
-    bool exists, running, notify_wait, notified;
+    bool exists, finished, running, notify_wait, notified;
     uint32_t notification;
     int64_t wake_us;
     void (*entry)(void *);
 } sim_task_t;
-static sim_task_t tasks[2]; // app_main, GY-511 reader
+static sim_task_t tasks[3]; // app_main, GY-511 reader, RC522 reader
 static pthread_mutex_t scheduler_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t scheduler_changed = PTHREAD_COND_INITIALIZER;
 static bool stopping;
@@ -26,6 +28,10 @@ static int running = -1;
 static int64_t base_us, end_us = 8200000;
 static bool gy_missing, dht_missing, task_failure, slow_read;
 static bool slow_dht_read, preempt_on_notify, gy_read_error;
+static bool rc_active, rc_missing, rc_task_failure, rc_slow_init, rc_slow_read, rc_read_error;
+static unsigned rc_inits, rc_count, rc_tx;
+static int64_t rc_times[256], rc_event_times[16];
+static const char *rc_scenario;
 static unsigned diagnostics_paused, dht_inits, gy_inits;
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
 static int64_t dht_times[64], gy_times[64];
@@ -40,6 +46,7 @@ typedef struct {
     int64_t at_us;
     const char *reason;
     unsigned read_count;
+    unsigned event_count;
     sensor_state_t state;
 } ack_t;
 static ack_t acks[32];
@@ -47,7 +54,7 @@ static unsigned ack_count;
 
 static int task_index(void)
 {
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         if (tasks[i].exists && pthread_equal(tasks[i].thread, pthread_self())) return i;
     }
     assert(false); return -1;
@@ -101,22 +108,33 @@ unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { return 1024; }
 BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
                       void *arg, unsigned priority, TaskHandle_t *handle)
 {
-    assert(task_index() == 0 && stack == 4096 && priority == 4 && handle);
-    assert(!strcmp(name, "gy511_reader"));
-    if (task_failure) return pdFALSE;
+    assert(task_index() == 0 && stack == 4096 && handle);
+    int index = !strcmp(name, "gy511_reader") ? 1 : 2;
+    assert(index == 1 ? priority == 4 : (!strcmp(name, "rc522_reader") && priority == 3));
+    if (index == 1 ? task_failure : rc_task_failure) return pdFALSE;
     pthread_mutex_lock(&scheduler_lock);
-    tasks[1].exists = true;
-    tasks[1].entry = entry;
-    tasks[1].wake_us = test_now_us;
-    *handle = &tasks[1];
-    assert(pthread_create(&tasks[1].thread, NULL, task_entry, &tasks[1]) == 0);
+    tasks[index].exists = true;
+    tasks[index].entry = entry;
+    tasks[index].wake_us = test_now_us;
+    *handle = &tasks[index];
+    assert(pthread_create(&tasks[index].thread, NULL, task_entry, &tasks[index]) == 0);
     pthread_mutex_unlock(&scheduler_lock);
     return pdPASS;
 }
+void vTaskDelete(TaskHandle_t task)
+{
+    assert(!task && task_index() == 2);
+    pthread_mutex_lock(&scheduler_lock);
+    tasks[2].finished = true; tasks[2].running = false; running = -1;
+    pthread_cond_broadcast(&scheduler_changed);
+    pthread_mutex_unlock(&scheduler_lock);
+    pthread_exit(NULL);
+}
 BaseType_t xTaskNotify(TaskHandle_t handle, uint32_t value, eNotifyAction action)
 {
-    assert(task_index() == 0 && handle == &tasks[1] && action == eSetValueWithoutOverwrite);
+    assert(task_index() == 0 && (handle == &tasks[1] || handle == &tasks[2]) && action == eSetValueWithoutOverwrite);
     sim_task_t *task = handle;
+    assert(!task->finished); // Never notify a deleted initialization-failure task.
     if (task->notified) { notify_busy++; return pdFALSE; }
     task->notified = true;
     task->notification = value;
@@ -129,8 +147,8 @@ BaseType_t xTaskNotify(TaskHandle_t handle, uint32_t value, eNotifyAction action
 BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
                            uint32_t *value, TickType_t wait)
 {
-    assert(task_index() == 1 && clear_entry == 0 && clear_exit == UINT32_MAX);
-    sim_task_t *task = &tasks[1];
+    assert(task_index() != 0 && clear_entry == 0 && clear_exit == UINT32_MAX);
+    sim_task_t *task = &tasks[task_index()];
     if (!task->notified && wait) yield_until(test_now_us + wait * 10000LL, true);
     if (!task->notified) return pdFALSE;
     *value = task->notification;
@@ -139,10 +157,33 @@ BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
 }
 
 esp_err_t wifi_manager_start(void) { return ESP_OK; }
-void rc522_reader_start(void)
+esp_err_t spi_bus_manager_init(void) { return rc_active ? ESP_OK : ESP_FAIL; }
+esp_err_t rc522_sensor_init(void)
 {
-    sensor_status_configure(SENSOR_RC522, "rc522", true);
-    sensor_status_record_init(SENSOR_RC522, ESP_FAIL);
+    rc_inits++;
+    if (rc_slow_init) vTaskDelay(pdMS_TO_TICKS(2500));
+    return rc_missing ? ESP_FAIL : ESP_OK;
+}
+esp_err_t rc522_sensor_poll(rc522_uid_t *uid, bool *present)
+{
+    assert(task_index() == 2 && rc_count < 256 && sensor_status_can_sample(SENSOR_RC522));
+    int64_t now = test_now_us - base_us;
+    rc_times[rc_count++] = now;
+    if (rc_slow_read && now == 2200000) vTaskDelay(pdMS_TO_TICKS(700));
+    if (rc_read_error && now == 2200000) return ESP_ERR_TIMEOUT;
+    *uid = (rc522_uid_t){.length = 4, .bytes = {0x5a, 0x2d, 0xfd, 0x03}};
+    *present = strcmp(rc_scenario, "rc_idle") != 0;
+    if (!strcmp(rc_scenario, "rc_remove") && now >= 4500000 && now <= 6000000) *present = false;
+    if (!strcmp(rc_scenario, "rc_partial_idle") && (now == 2700000 || now == 3200000 || now == 4800000)) *present = false;
+    if (!strcmp(rc_scenario, "rc_different") && now >= 4000000) uid->bytes[0] = 0xff;
+    return ESP_OK;
+}
+esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t length)
+{
+    assert(task_index() == 2 && sensor_status_can_sample(SENSOR_RC522));
+    assert(length == 4 && rc_tx < 16);
+    rc_event_times[rc_tx++] = test_now_us - base_us;
+    return ESP_OK;
 }
 esp_err_t mqtt_manager_init(void) { return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { return ESP_OK; }
@@ -194,7 +235,7 @@ bool mqtt_manager_take_config_update(mqtt_config_update_t *update)
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
     // In particular, the dispatcher must NEVER ACK a forwarded GY-511 update.
-    assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : 0));
+    assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : update->sensor == SENSOR_RC522 ? 2 : 0));
     sensor_status_t status;
     assert(sensor_status_get(update->sensor, &status));
     if (update->operation == MQTT_CONFIG_ENABLED) {
@@ -203,7 +244,8 @@ esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
     }
     assert(ack_count < 32);
     acks[ack_count++] = (ack_t){.update = *update, .applied = true, .at_us = test_now_us - base_us,
-        .read_count = update->sensor == SENSOR_DHT22 ? dht_count : gy_count, .state = status.state};
+        .read_count = update->sensor == SENSOR_DHT22 ? dht_count : update->sensor == SENSOR_GY511 ? gy_count : rc_count,
+        .event_count = rc_tx, .state = status.state};
     return ESP_OK;
 }
 esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const char *reason)
@@ -214,7 +256,8 @@ esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const c
     assert(!sensor_status_can_sample(update->sensor));
     assert(ack_count < 32);
     acks[ack_count++] = (ack_t){.update = *update, .applied = false, .at_us = test_now_us - base_us,
-        .reason = reason, .read_count = update->sensor == SENSOR_DHT22 ? dht_count : gy_count,
+        .reason = reason, .read_count = update->sensor == SENSOR_DHT22 ? dht_count : update->sensor == SENSOR_GY511 ? gy_count : rc_count,
+        .event_count = rc_tx,
         .state = status.state};
     return ESP_OK;
 }
@@ -242,13 +285,14 @@ static void gate_input(int64_t at_us, sensor_id_t sensor, bool enabled)
 static void verify_commands(void)
 {
     sensor_status_t rc522;
-    assert(sensor_status_get(SENSOR_RC522, &rc522) && rc522.state == SENSOR_UNAVAILABLE);
+    assert(sensor_status_get(SENSOR_RC522, &rc522));
+    if (!rc_active) assert(rc522.state == SENSOR_UNAVAILABLE);
     assert(!queued && taken == input_count && ack_count == input_count);
     assert(dht_inits == 1 && gy_inits == 1); // Enable never reinitializes either driver.
     assert(dht_tx == dht_count && gy_tx == gy_count - (gy_read_error ? 1U : 0U) && diagnostics > 0);
     // FIFO application/ACK order within each sensor, including rejections at
     // the owner. Cross-sensor ACK order need not match the original FIFO.
-    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_GY511; ++sensor) {
+    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_RC522; ++sensor) {
         unsigned cursor = 0;
         for (unsigned i = 0; i < input_count; ++i) {
             const input_t *in = &inputs[i];
@@ -274,8 +318,8 @@ static void simulate(void)
     while (true) {
         while (running >= 0) pthread_cond_wait(&scheduler_changed, &scheduler_lock);
         int64_t next_us = base_us + end_us;
-        for (int i = 0; i < 2; ++i) {
-            if (tasks[i].exists && tasks[i].wake_us < next_us) next_us = tasks[i].wake_us;
+        for (int i = 0; i < 3; ++i) {
+            if (tasks[i].exists && !tasks[i].finished && tasks[i].wake_us < next_us) next_us = tasks[i].wake_us;
         }
         if (next_input < input_count && base_us + inputs[next_input].at_us < next_us) {
             next_us = base_us + inputs[next_input].at_us;
@@ -286,8 +330,10 @@ static void simulate(void)
             assert(queued < 4); // Queue-full validation is covered by the actual MQTT tests.
             queue[queued++] = inputs[next_input++].update;
         }
-        for (int i = 1; i >= 0; --i) { // GY-511 is higher priority than app_main.
-            if (tasks[i].exists && tasks[i].wake_us <= test_now_us) {
+        const int priority_order[] = {1, 2, 0};
+        for (unsigned p = 0; p < 3; ++p) {
+            int i = priority_order[p];
+            if (tasks[i].exists && !tasks[i].finished && tasks[i].wake_us <= test_now_us) {
                 tasks[i].running = true; running = i;
                 pthread_cond_broadcast(&scheduler_changed);
                 break;
@@ -297,7 +343,7 @@ static void simulate(void)
     stopping = true;
     pthread_cond_broadcast(&scheduler_changed);
     pthread_mutex_unlock(&scheduler_lock);
-    for (int i = 0; i < 2; ++i) if (tasks[i].exists) pthread_join(tasks[i].thread, NULL);
+    for (int i = 0; i < 3; ++i) if (tasks[i].exists) pthread_join(tasks[i].thread, NULL);
 }
 
 static void test_gates(const char *scenario)
@@ -435,10 +481,161 @@ static void test_gates(const char *scenario)
     printf("PASS: enable/disable scenario %s\n", scenario);
 }
 
+static void test_rc522_config(const char *scenario)
+{
+    rc_scenario = scenario;
+    rc_active = strcmp(scenario, "rc_bus_failure") != 0;
+    rc_missing = !strcmp(scenario, "rc_unavailable");
+    rc_task_failure = !strcmp(scenario, "rc_task_failure");
+    rc_slow_init = !strcmp(scenario, "rc_uninitialized");
+    rc_slow_read = !strcmp(scenario, "rc_during_read");
+    rc_read_error = !strcmp(scenario, "rc_degraded");
+    preempt_on_notify = !strcmp(scenario, "rc_preempt");
+    bool unavailable = !rc_active || rc_missing || rc_task_failure;
+    bool gates = !strcmp(scenario, "rc_gates") || !strcmp(scenario, "rc_remove") ||
+                 !strcmp(scenario, "rc_different") || !strcmp(scenario, "rc_partial_idle") ||
+                 !strcmp(scenario, "rc_wrap");
+    bool burst = !strcmp(scenario, "rc_burst") || preempt_on_notify;
+    bool all_config = !strcmp(scenario, "rc_all_config");
+    if (!strcmp(scenario, "rc_wrap")) base_us = ((int64_t)UINT32_MAX - 250) * 10000;
+    test_now_us = base_us;
+    if (unavailable) {
+        gate_input(0, SENSOR_RC522, true);
+        gate_input(2300000, SENSOR_RC522, false);
+        input(2400000, SENSOR_RC522, 500);
+        for (unsigned i = 0; i < input_count; ++i) inputs[i].rejection = "sensor_unavailable";
+    } else if (rc_slow_init) {
+        input(2000000, SENSOR_RC522, 500);
+        inputs[input_count - 1].rejection = "sensor_unavailable";
+        gate_input(3000000, SENSOR_RC522, true);
+    } else if (gates) {
+        input(2300000, SENSOR_RC522, 500);
+        gate_input(3300000, SENSOR_RC522, false);
+        gate_input(3500000, SENSOR_RC522, false);
+        input(3700000, SENSOR_RC522, 1000);
+        inputs[input_count - 1].rejection = "sensor_disabled";
+        gate_input(4300000, SENSOR_RC522, true);
+        gate_input(4400000, SENSOR_RC522, true);
+    } else if (burst) {
+        gate_input(2300000, SENSOR_RC522, false);
+        input(2300000, SENSOR_RC522, 500);
+        inputs[input_count - 1].rejection = "sensor_disabled";
+        gate_input(2300000, SENSOR_RC522, true);
+        input(2300000, SENSOR_RC522, 1000);
+        input(2800000, SENSOR_RC522, 2000);
+        gate_input(2800000, SENSOR_RC522, false);
+        gate_input(2800000, SENSOR_RC522, true);
+        input(2800000, SENSOR_RC522, 500);
+    } else if (rc_slow_read || rc_read_error) {
+        gate_input(2300000, SENSOR_RC522, false);
+        gate_input(3300000, SENSOR_RC522, true);
+        gate_input(3400000, SENSOR_RC522, true);
+    } else if (!strcmp(scenario, "rc_paused")) {
+        gate_input(2300000, SENSOR_RC522, false);
+        gate_input(5000000, SENSOR_RC522, false);
+    } else if (all_config) {
+        input(2300000, SENSOR_RC522, 500);
+        input(2300000, SENSOR_DHT22, 5000);
+        input(2300000, SENSOR_GY511, 1000);
+        gate_input(2300000, SENSOR_RC522, false);
+        gate_input(3100000, SENSOR_RC522, true);
+        gate_input(3500000, SENSOR_GY511, false);
+        gate_input(4000000, SENSOR_DHT22, false);
+        gate_input(4300000, SENSOR_GY511, true);
+        gate_input(4500000, SENSOR_DHT22, true);
+        input(4700000, SENSOR_RC522, 200);
+    } else if (!strcmp(scenario, "rc_flood")) {
+        for (unsigned i = 0; i < 16; ++i) {
+            if (i % 2) gate_input(2300000 + i * 100000, SENSOR_RC522, true);
+            else input(2300000 + i * 100000, SENSOR_RC522, 200);
+        }
+    } else if (!strcmp(scenario, "rc_interval")) {
+        input(2300000, SENSOR_RC522, 500);
+        input(3400000, SENSOR_RC522, 1000);
+        input(5400000, SENSOR_RC522, 200);
+    } else if (!strcmp(scenario, "rc_rounding")) {
+        input(2300000, SENSOR_RC522, 201);
+    } else if (!strcmp(scenario, "rc_shorten")) {
+        input(2300000, SENSOR_RC522, 2000);
+        input(2600000, SENSOR_RC522, 200);
+    } else assert(!strcmp(scenario, "rc_default") || !strcmp(scenario, "rc_idle"));
+
+    simulate();
+    verify_commands();
+    assert(rc_inits == (!rc_active || rc_task_failure ? 0U : 1U));
+    sensor_status_t status;
+    assert(sensor_status_get(SENSOR_RC522, &status));
+    if (unavailable) {
+        assert(status.state == SENSOR_UNAVAILABLE && !rc_count && !rc_tx);
+        assert(!rc522_reader_task_handle());
+    } else {
+        assert(rc522_reader_task_handle() == &tasks[2]);
+        assert(status.read_failures == (rc_read_error ? 1U : 0U));
+        bool enabled = true;
+        unsigned paused_reads = 0, paused_events = 0;
+        for (unsigned i = 0; i < ack_count; ++i) {
+            const ack_t *ack = &acks[i];
+            if (!ack->applied || ack->update.sensor != SENSOR_RC522 ||
+                ack->update.operation != MQTT_CONFIG_ENABLED) continue;
+            if (!enabled) {
+                assert(ack->read_count == paused_reads && ack->event_count == paused_events);
+            }
+            if (!ack->update.enabled) {
+                paused_reads = ack->read_count;
+                paused_events = ack->event_count;
+            }
+            enabled = ack->update.enabled;
+        }
+        if (!enabled) assert(rc_count == paused_reads && rc_tx == paused_events && status.state == SENSOR_DISABLED);
+        else assert(status.state == SENSOR_READY);
+        unsigned expected_events = !strcmp(scenario, "rc_idle") ? 0 :
+            (!strcmp(scenario, "rc_remove") || !strcmp(scenario, "rc_different")) ? 2 : 1;
+        assert(rc_tx == expected_events); // Pause/resume alone never fabricates a presentation.
+        if (!strcmp(scenario, "rc_idle")) assert(!status.read_successes && status.last_success_us == -1);
+        if (!strcmp(scenario, "rc_remove")) assert(rc_event_times[1] == 6300000);
+        if (!strcmp(scenario, "rc_different")) assert(rc_event_times[1] == 4800000);
+        if (gates) {
+            for (unsigned i = 0; i < 12; ++i) assert(rc_times[i] == i * 200000LL);
+            assert(rc_times[12] == 2700000 && rc_times[13] == 3200000);
+            for (unsigned i = 14; i < rc_count; ++i) assert(rc_times[i] == 4800000 + (i - 14) * 500000LL);
+        } else if (!strcmp(scenario, "rc_interval")) {
+            assert(rc_times[12] == 2700000 && rc_times[13] == 3200000 &&
+                   rc_times[14] == 4200000 && rc_times[15] == 5200000 && rc_times[16] == 5400000);
+            for (unsigned i = 17; i < rc_count; ++i) assert(rc_times[i] - rc_times[i - 1] == 200000);
+        } else if (!strcmp(scenario, "rc_rounding")) {
+            for (unsigned i = 12; i < rc_count; ++i) assert(rc_times[i] == 2410000 + (i - 12) * 210000LL);
+        } else if (!strcmp(scenario, "rc_shorten")) {
+            assert(acks[1].at_us == 2600000 && rc_times[12] == 2600000);
+            for (unsigned i = 13; i < rc_count; ++i) assert(rc_times[i] - rc_times[i - 1] == 200000);
+        } else if (burst) {
+            if (!preempt_on_notify) assert(notify_busy > 0);
+            const ack_t *last = &acks[ack_count - 1];
+            assert(last->update.interval_ms == 500 && rc_count > last->read_count + 1);
+            for (unsigned i = last->read_count + 1; i < rc_count; ++i) assert(rc_times[i] - rc_times[i - 1] == 500000);
+        } else if (rc_slow_read || rc_read_error) {
+            assert(acks[0].at_us == (rc_slow_read ? 2900000 : 2300000));
+            assert(rc_times[12] == 3500000);
+            if (rc_read_error) assert(acks[1].state == SENSOR_DEGRADED && status.consecutive_failures == 0);
+        } else if (rc_slow_init) {
+            assert(!acks[0].applied && acks[0].at_us == 2000000);
+            for (unsigned i = 0; i < rc_count; ++i) assert(rc_times[i] == 2500000 + i * 200000LL);
+        } else if (!all_config) {
+            for (unsigned i = 0; i < rc_count; ++i) assert(rc_times[i] == i * 200000LL);
+        }
+    }
+    if (!all_config) {
+        assert(dht_count == 4 && gy_count == 17);
+        for (unsigned i = 0; i < dht_count; ++i) assert(dht_times[i] == 2000000 + i * 2000000LL);
+        for (unsigned i = 0; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
+    } else assert(dht_count > 0 && gy_count > 0 && rc_count > 0);
+    printf("PASS: RC522 runtime configuration scenario %s\n", scenario);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
     const char *scenario = argv[1];
+    if (!strncmp(scenario, "rc_", 3)) { test_rc522_config(scenario); return 0; }
     if (!strncmp(scenario, "gate_", 5)) { test_gates(scenario); return 0; }
     bool changes = !strcmp(scenario, "changes") || !strcmp(scenario, "mixed") ||
                    !strcmp(scenario, "dht_unavailable");

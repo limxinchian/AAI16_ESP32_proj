@@ -484,10 +484,10 @@ int main(void)
     cJSON_Delete(data);
 
     // Strict Boolean operations share the same parser, FIFO and QoS 1 ACK path.
-    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_GY511; ++sensor) {
+    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_RC522; ++sensor) {
         for (int enabled = 0; enabled <= 1; ++enabled) {
             char payload[100]; mqtt_config_update_t update;
-            const char *name = sensor == SENSOR_DHT22 ? "dht22" : "gy511";
+            const char *name = sensor == SENSOR_DHT22 ? "dht22" : sensor == SENSOR_GY511 ? "gy511" : "rc522";
             snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"enabled\":%s}",
                      name, enabled ? "true" : "false");
             ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
@@ -520,9 +520,32 @@ int main(void)
     rejected("{\"sensor\":\"dht22\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"future\",\"enabled\":false}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\"") && strstr(last_payload, "\"enabled\":false"));
-    // RC522 event telemetry deliberately has no MQTT configuration route.
-    rejected("{\"sensor\":\"rc522\",\"enabled\":false}", "unsupported_sensor");
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":1000}", "unsupported_sensor");
+    // RC522 uses the same parser, FIFO and ACK serializer, with its own limits.
+    const unsigned rc_valid[] = {200, 201, 500, 1000, 2000};
+    for (unsigned i = 0; i < sizeof(rc_valid) / sizeof(rc_valid[0]); ++i) {
+        char payload[100]; mqtt_config_update_t update;
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"rc522\",\"interval_ms\":%u}", rc_valid[i]);
+        ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
+        json_command(payload);
+        assert(s_stats[TX_CONFIG_ACK].attempts == ack_attempts); // Parsing/queueing is not application.
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_RC522);
+        assert(update.operation == MQTT_CONFIG_INTERVAL && update.interval_ms == rc_valid[i]);
+        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"rc522\",\"status\":\"applied\",\"interval_ms\":%u}", rc_valid[i]);
+        assert(!strcmp(last_payload, payload) && last_qos == 1);
+        assert(mqtt_manager_reject_config(&update, "sensor_disabled") == ESP_OK); pump();
+        assert(strstr(last_payload, "\"sensor\":\"rc522\"") && strstr(last_payload, "sensor_disabled"));
+    }
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":199}", "integer from 200 to 2000");
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":2001}", "integer from 200 to 2000");
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":500.5}", "integer from 200 to 2000");
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":-1}", "integer from 200 to 2000");
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":1e999}", "integer from 200 to 2000");
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":\"500\"}", "missing_or_invalid_interval_ms");
+    rejected("{\"sensor\":\"rc522\",\"enabled\":0}", "enabled must be a boolean");
+    rejected("{\"sensor\":\"rc522\",\"enabled\":false,\"interval_ms\":500}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"rc522\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"rc522\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"gy511\",\"enabled\":false,\"interval_ms\":1000}", "ambiguous_configuration");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":2000,\"enabled\":null}", "ambiguous_configuration");
     rejected("{\"sensor\":\"gy511\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
@@ -563,6 +586,29 @@ int main(void)
     assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
     assert(strstr(last_payload, "\"sensor\":null"));
     test_rfid_events();
+
+    // A disable ACK does not retract earlier presentations from the event FIFO.
+    const uint8_t card[] = {0x5a, 0x2d, 0xfd, 3};
+    assert(mqtt_manager_publish_rc522_event(card, sizeof(card)) == ESP_OK);
+    json_command("{\"sensor\":\"rc522\",\"enabled\":false}");
+    mqtt_config_update_t disable;
+    assert(mqtt_manager_take_config_update(&disable) && disable.sensor == SENSOR_RC522 && !disable.enabled);
+    assert(mqtt_manager_publish_config_ack(&disable) == ESP_OK);
+    assert(uxQueueMessagesWaiting(s_event_queue) == 1);
+    uint32_t events_enqueued = s_stats[TX_RC522_EVENT].enqueued;
+    pump();
+    assert(s_stats[TX_RC522_EVENT].enqueued == events_enqueued + 1 && last_qos == 1);
+    assert(!strcmp(last_topic, RC522_EVENT_TOPIC));
+    assert(!uxQueueMessagesWaiting(s_event_queue));
+
+    // RC522 obeys retained/fragmented command policy, including while events are enabled.
+    valid_cmd = "{\"sensor\":\"rc522\",\"enabled\":true}";
+    len = strlen(valid_cmd); calls = enqueue_calls;
+    command(valid_cmd, len, len, 0, true); pump();
+    command(valid_cmd, len, len, 1, false); pump();
+    assert(enqueue_calls == calls && !mqtt_manager_take_config_update(&disable));
+    command(valid_cmd, len - 1, len, 0, false); pump();
+    assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +

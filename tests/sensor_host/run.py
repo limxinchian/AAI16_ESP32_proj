@@ -22,14 +22,14 @@ repo = test.parents[1]
 output = repo / "build" / "sensor_host"
 output.mkdir(parents=True, exist_ok=True)
 for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "freertos/FreeRTOS.h",
-             "freertos/task.h", "driver/gpio.h", "driver/i2c_master.h"]:
+             "freertos/task.h", "driver/gpio.h", "driver/i2c_master.h", "driver/spi_master.h"]:
     header = output / name
     header.parent.mkdir(parents=True, exist_ok=True)
     header.write_text('#include "platform.h"\n')
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output)]
 for component in ["sensor_status", "dht22_moisture_sensor", "gy511_sensor",
-                  "i2c_bus_manager", "wifi_manager", "mqtt_manager"]:
+                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
@@ -46,6 +46,11 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
                      "during_read", "gy_unavailable", "gy_task_failure", "dht_unavailable", "tick_wrap",
                      "gate_gy", "gate_dht", "gate_both", "gate_burst", "gate_preempt", "gate_read",
                      "gate_dht_read", "gate_gy_unavailable", "gate_task_unavailable", "gate_dht_unavailable",
-                     "gate_degraded", "gate_wrap"]
+                     "gate_degraded", "gate_wrap",
+                     "rc_default", "rc_idle", "rc_interval", "rc_rounding", "rc_shorten",
+                     "rc_gates", "rc_remove", "rc_different", "rc_partial_idle", "rc_paused",
+                     "rc_burst", "rc_preempt", "rc_flood", "rc_during_read", "rc_degraded",
+                     "rc_unavailable", "rc_task_failure", "rc_bus_failure", "rc_uninitialized",
+                     "rc_all_config", "rc_wrap"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

@@ -74,7 +74,7 @@ esp_err_t mqtt_manager_publish_gy511(
 // Disable commits between reads and pauses acquisition, not hardware power.
 // Previously queued telemetry may still arrive afterward. Re-enable resets the
 // deadline by one retained period; an already enabled sensor keeps its deadline.
-// Both sensors start enabled with default intervals after each boot.
+// All three sensors start enabled with default intervals after each boot.
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
 bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
 

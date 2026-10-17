@@ -9,6 +9,7 @@
 #include "gy511_sensor.h"
 #include "sensor_status.h"
 #include "rc522_reader.h"
+#include "sensor_config.h"
 
 #include "esp_err.h"
 #include "esp_timer.h"
@@ -27,24 +28,6 @@
 #define GY511_LOG_INTERVAL_MS 10000
 
 static TaskHandle_t s_gy511_task;
-
-// One notification word carries exactly one command: validated intervals are
-// <= 10000; the high bit tags enable/disable and bit 0 holds its Boolean value.
-// Keeping both operations on index 0 preserves their application order.
-#define CONFIG_ENABLED_FLAG (UINT32_C(1) << 31)
-
-static bool config_can_apply(const mqtt_config_update_t *update, sensor_status_t *status)
-{
-    const char *reason = NULL;
-    if (!sensor_status_get(update->sensor, status) || !status->initialized ||
-        status->state == SENSOR_UNAVAILABLE || status->state == SENSOR_UNINITIALIZED) {
-        reason = "sensor_unavailable";
-    } else if (update->operation == MQTT_CONFIG_INTERVAL && status->state == SENSOR_DISABLED) {
-        reason = "sensor_disabled";
-    }
-    if (reason != NULL) (void)mqtt_manager_reject_config(update, reason);
-    return reason == NULL;
-}
 
 static void gy511_reader_task(void *arg)
 {
@@ -281,8 +264,10 @@ void app_main(void)
         for (unsigned commands = 0; commands < 4 &&
              mqtt_manager_peek_config_update(&update); ++commands)
         {
-            if (update.sensor == SENSOR_GY511) {
-                if (s_gy511_task == NULL) {
+            if (update.sensor == SENSOR_GY511 || update.sensor == SENSOR_RC522) {
+                TaskHandle_t reader = update.sensor == SENSOR_GY511 ?
+                    s_gy511_task : rc522_reader_task_handle();
+                if (reader == NULL) {
                     mqtt_manager_take_config_update(&update);
                     (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
                     continue;
@@ -291,7 +276,7 @@ void app_main(void)
                 // has a notification. No ACK until that reader commits it.
                 uint32_t control = update.operation == MQTT_CONFIG_ENABLED ?
                     CONFIG_ENABLED_FLAG | (uint32_t)update.enabled : update.interval_ms;
-                if (xTaskNotify(s_gy511_task, control,
+                if (xTaskNotify(reader, control,
                                 eSetValueWithoutOverwrite) != pdPASS) break;
                 mqtt_manager_take_config_update(&update);
                 continue;
