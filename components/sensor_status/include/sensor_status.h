@@ -1,0 +1,55 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include "esp_err.h"
+
+// Fixed slots; add sensor IDs here as drivers are integrated (maximum eight).
+typedef enum {
+    SENSOR_DHT22,
+    SENSOR_GY511,
+    SENSOR_STATUS_CAPACITY = 8
+} sensor_id_t;
+
+typedef enum {
+    SENSOR_DISABLED,
+    SENSOR_UNINITIALIZED,
+    SENSOR_READY,
+    SENSOR_DEGRADED,
+    SENSOR_UNAVAILABLE
+} sensor_state_t;
+
+typedef enum {
+    SENSOR_STAGE_NONE,
+    SENSOR_STAGE_DEPENDENCY,
+    SENSOR_STAGE_INIT,
+    SENSOR_STAGE_TASK,
+    SENSOR_STAGE_READ
+} sensor_error_stage_t;
+
+typedef struct {
+    const char *name;
+    sensor_state_t state;
+    bool initialized; // Remains true if initialization succeeded but task creation failed.
+    sensor_error_stage_t error_stage;
+    esp_err_t last_error; // Current error; cleared by a successful read.
+    uint32_t read_successes;
+    uint32_t read_failures;
+    uint32_t consecutive_failures; // Read failures only, not initialization failures.
+    int64_t last_success_us; // Acquisition completion uptime; -1 means never.
+} sensor_status_t;
+
+// Configure once at startup, before the sensor's worker starts. Name must have
+// static lifetime. Disabled slots are reported separately from failed sensors.
+// This only records status: it does not initialize, stop, or recover hardware.
+esp_err_t sensor_status_configure(sensor_id_t id, const char *name, bool enabled);
+void sensor_status_record_init(sensor_id_t id, esp_err_t error);
+void sensor_status_record_unavailable(sensor_id_t id, sensor_error_stage_t stage,
+                                      esp_err_t error);
+void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us);
+bool sensor_status_can_sample(sensor_id_t id);
+bool sensor_status_get(sensor_id_t id, sensor_status_t *out);
+
+// Call only from app_main, after any due acquisition. At most eight lines per
+// 60 seconds, no per-failure logging, no MQTT/driver calls, and no dynamic memory.
+void sensor_status_log_summary(void);

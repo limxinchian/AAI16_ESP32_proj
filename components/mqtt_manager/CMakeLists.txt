@@ -8,4 +8,5 @@ idf_component_register(
         esp_netif
         freertos
         json
+    PRIV_REQUIRES esp_timer esp_hw_support
 )
