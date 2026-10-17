@@ -218,3 +218,167 @@ static void test_radar_telemetry(void)
     assert(!stats->outbox_full && !stats->invalid && !critical_depth);
     puts("PASS: radar latest snapshot, 1 Hz, stale/invalid/offline/full queue, ACK/RFID isolation, blocked SDK, QoS0 counters");
 }
+
+static void radar_interval(uint32_t ms)
+{
+    int calls = publish_calls, enqueues = enqueue_calls;
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){
+        .sensor=SENSOR_LD2450, .operation=MQTT_CONFIG_INTERVAL, .interval_ms=ms}) == ESP_OK);
+    assert(publish_calls == calls && enqueue_calls == enqueues);
+}
+
+static void radar_gate(bool enabled)
+{
+    int calls = publish_calls, enqueues = enqueue_calls;
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){
+        .sensor=SENSOR_LD2450, .operation=MQTT_CONFIG_ENABLED, .enabled=enabled}) == ESP_OK);
+    assert(publish_calls == calls && enqueue_calls == enqueues);
+}
+
+static void radar_gate_during_format(void)
+{
+    radar_gate(false); radar_gate(true);
+    ld2450_report_t fresh_idle = {0};
+    assert(mqtt_manager_update_ld2450_snapshot(&fresh_idle, clock_us) == ESP_OK);
+}
+static void radar_interval_during_format(void) { radar_interval(10000); }
+static void radar_age_during_format(void) { clock_us += LD2450_MAX_AGE_US; }
+static void radar_gate_during_sdk(void) { publish_hook = NULL; radar_gate(false); }
+
+static void test_radar_config(void)
+{
+    // All commands share the actual parser/FIFO/ACK serializer; parsing alone
+    // must not commit a setting or claim application by the UART owner.
+    const unsigned valid[] = {500, 501, 1000, 2000, 10000};
+    for (unsigned i = 0; i < sizeof(valid)/sizeof(valid[0]); ++i) {
+        char payload[96]; mqtt_config_update_t update;
+        uint32_t attempts = s_stats[TX_CONFIG_ACK].attempts;
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"ld2450\",\"interval_ms\":%u}", valid[i]);
+        json_command(payload);
+        assert(s_stats[TX_CONFIG_ACK].attempts == attempts && s_radar_interval_ms == 1000);
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_LD2450);
+        assert(update.operation == MQTT_CONFIG_INTERVAL && update.interval_ms == valid[i]);
+        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"ld2450\",\"status\":\"applied\",\"interval_ms\":%u}", valid[i]);
+        assert(last_qos == 1 && !strcmp(last_payload, payload));
+    }
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":499}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":10001}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":500.5}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":-1}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":1e999}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":\"500\"}", "missing_or_invalid_interval_ms");
+    const char *invalid_booleans[] = {"0", "1", "null", "\"true\"", "[]", "{}"};
+    for (unsigned i = 0; i < sizeof(invalid_booleans)/sizeof(invalid_booleans[0]); ++i) {
+        char payload[96];
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"ld2450\",\"enabled\":%s}", invalid_booleans[i]);
+        rejected(payload, "enabled must be a boolean");
+    }
+    rejected("{\"sensor\":\"ld2450\",\"enabled\":false,\"interval_ms\":500}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"ld2450\",\"enabled\":false,\"enabled\":true}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":500,\"interval_ms\":1000}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"ld2450\",\"calibrate\":true}", "missing_configuration_operation");
+    const char *held = "{\"sensor\":\"ld2450\",\"enabled\":false}";
+    uint32_t attempts = s_stats[TX_CONFIG_ACK].attempts;
+    command(held, strlen(held), strlen(held), 0, true);
+    command(held, strlen(held), strlen(held), 1, false);
+    assert(!uxQueueMessagesWaiting(s_config_queue) && s_stats[TX_CONFIG_ACK].attempts == attempts);
+
+    const char *mixed[] = {
+        "{\"sensor\":\"ld2450\",\"enabled\":false}", "{\"sensor\":\"ld2450\",\"interval_ms\":2000}",
+        "{\"sensor\":\"ld2450\",\"enabled\":true}", "{\"sensor\":\"ld2450\",\"interval_ms\":500}"
+    };
+    for (unsigned i = 0; i < 4; ++i) json_command(mixed[i]);
+    json_command(mixed[0]); pump(); assert(strstr(last_payload, "queue_full"));
+    for (unsigned i = 0; i < 4; ++i) {
+        mqtt_config_update_t update;
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_LD2450);
+        assert(update.operation == (i % 2 ? MQTT_CONFIG_INTERVAL : MQTT_CONFIG_ENABLED));
+        if (i % 2) assert(update.interval_ms == (i == 1 ? 2000U : 500U));
+        else assert(update.enabled == (i == 2));
+    }
+    puts("PASS: LD2450 generic configuration parsing, limits, Booleans, ordered FIFO, ACK JSON and retained policy");
+
+    assert(s_radar_enabled && s_radar_interval_ms == 1000);
+    assert(mqtt_manager_commit_ld2450_config(NULL) == ESP_ERR_INVALID_ARG);
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){.sensor=SENSOR_RC522, .interval_ms=500}) == ESP_ERR_INVALID_ARG);
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){.sensor=SENSOR_LD2450, .interval_ms=499}) == ESP_ERR_INVALID_ARG);
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){.sensor=SENSOR_LD2450, .interval_ms=10001}) == ESP_ERR_INVALID_ARG);
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){.sensor=SENSOR_LD2450, .operation=99}) == ESP_ERR_INVALID_ARG);
+
+    ld2450_report_t r = radar_fixture(1);
+    tx_stats_t *stats = &s_stats[TX_LD2450];
+    radar_interval(500);
+    assert(s_radar_next_publish_us == clock_us + 500000 && publisher_wait_ticks() == 500);
+    assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    int calls = publish_calls;
+    clock_us += 499000; pump();
+    assert(publish_calls == calls && last_worker_wait == 1);
+    clock_us += 1000; pump(); assert(publish_calls == calls + 1 && last_worker_wait <= 500);
+    for (unsigned i = 0; i < 3; ++i) {
+        radar_due();
+        int64_t due = clock_us;
+        assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+        pump();
+        assert(s_radar_next_publish_us == due + 500000 && publish_calls == calls + 2 + (int)i);
+    }
+    radar_interval(501); assert(publisher_wait_ticks() == 501);
+    radar_interval(10000); assert(publisher_wait_ticks() == 1000);
+    assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    uint32_t stale = stats->stale;
+    radar_due(); calls = publish_calls; pump();
+    assert(publish_calls == calls && stats->stale == stale + 1); // Long period cannot relax freshness.
+    clock_us = s_radar_next_publish_us - 100000;
+    int64_t acquired = clock_us;
+    assert(mqtt_manager_update_ld2450_snapshot(&r, acquired) == ESP_OK);
+    radar_due(); uint32_t seq = stats->attempts + 1; pump(); check_radar_json(&r, acquired, seq);
+
+    radar_interval(2000);
+    assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    radar_gate(false);
+    assert(!s_radar.pending && !s_radar_enabled && publisher_wait_ticks() == 1000);
+    assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_ERR_INVALID_STATE);
+    assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){.sensor=SENSOR_LD2450, .interval_ms=500}) == ESP_ERR_INVALID_STATE);
+    calls = publish_calls; clock_us += 10000000; pump(); assert(publish_calls == calls);
+    radar_gate(false); assert(s_radar_interval_ms == 2000);
+    radar_gate(true);
+    assert(!s_radar.pending && s_radar_next_publish_us == clock_us + 2000000);
+    int64_t deadline = s_radar_next_publish_us;
+    clock_us += 500000; radar_gate(true); assert(s_radar_next_publish_us == deadline);
+    radar_due(); pump(); assert(publish_calls == calls); // No pre-enable snapshot replay.
+    ld2450_report_t idle = {0};
+    clock_us = s_radar_next_publish_us - 100000; acquired = clock_us;
+    assert(mqtt_manager_update_ld2450_snapshot(&idle, acquired) == ESP_OK);
+    radar_due(); seq = stats->attempts + 1; pump(); check_radar_json(&idle, acquired, seq);
+
+    // Disable/re-enable between copy and SDK admission invalidates even a
+    // copied report. The new generation's snapshot must remain pending.
+    radar_due(); assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    timer_hook = radar_gate_during_format; timer_hook_countdown = 2;
+    calls = publish_calls; uint32_t cancelled = stats->cancelled;
+    service_radar_snapshot();
+    assert(!timer_hook && publish_calls == calls && stats->cancelled == cancelled + 1 && s_radar.pending);
+    // Advance with new frames so the retained 2 s period has fresh idle data.
+    clock_us = s_radar_next_publish_us - 100000; acquired = clock_us;
+    assert(mqtt_manager_update_ld2450_snapshot(&idle, acquired) == ESP_OK);
+    radar_due(); seq = stats->attempts + 1; pump(); check_radar_json(&idle, acquired, seq);
+    radar_due(); assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    timer_hook = radar_interval_during_format; timer_hook_countdown = 2;
+    calls = publish_calls; service_radar_snapshot();
+    assert(!timer_hook && publish_calls == calls && stats->cancelled == cancelled + 2);
+    assert(s_radar_interval_ms == 10000 && s_radar_next_publish_us == clock_us + 10000000);
+    radar_due(); assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    timer_hook = radar_age_during_format; timer_hook_countdown = 2;
+    stale = stats->stale; service_radar_snapshot();
+    assert(!timer_hook && publish_calls == calls && stats->stale == stale + 1);
+
+    // An already admitted send may complete after disable. No lock is held
+    // during SDK calls and the control owner need not wait for that transport.
+    radar_due(); assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
+    publish_hook = radar_gate_during_sdk; service_radar_snapshot();
+    assert(!s_radar_enabled && !s_radar.pending && publish_calls == calls + 1);
+    clock_us += 20000000; pump(); assert(publish_calls == calls + 1);
+    radar_gate(true); radar_interval(1000);
+    assert(stats->attempts == stats->publish_ok + stats->publish_failed + stats->offline + stats->stale + stats->cancelled);
+    puts("PASS: radar publication 500..10000 ms, bounded worker wait, pause/resume, freshness and in-flight control races");
+}

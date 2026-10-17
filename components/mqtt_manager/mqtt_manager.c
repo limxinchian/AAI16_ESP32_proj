@@ -40,7 +40,7 @@
 // Three targets need more than the shared 320-byte queue payload. Keep that
 // queue unchanged: serialize a single radar mailbox only in the publisher.
 #define LD2450_PAYLOAD_SIZE 512
-#define LD2450_PUBLISH_PERIOD_US 1000000LL
+#define LD2450_DEFAULT_INTERVAL_MS 1000
 #define LD2450_MAX_AGE_US 2000000LL
 // Keep the original 4096-byte allowance available to configuration ACKs/control
 // traffic. Events may occupy at most an additional 1024 serialized bytes.
@@ -69,6 +69,9 @@ static const config_rule_t s_config_rules[] = {
     // Keep the verified 200 ms minimum; cap slow polling at 2 s because both
     // detection latency and the three-idle-poll removal filter scale with it.
     {SENSOR_RC522, "rc522", 200, 2000},
+    // Publication period only: at most two replaceable radar samples/second.
+    // UART acquisition and the 2 s freshness limit remain independent.
+    {SENSOR_LD2450, "ld2450", 500, 10000},
 };
 
 static const config_rule_t *config_rule_for_id(sensor_id_t id)
@@ -126,6 +129,7 @@ typedef struct {
     uint32_t enqueued;
     uint32_t publish_ok;
     uint32_t publish_failed;
+    uint32_t cancelled;
     int64_t max_tx_call_us;
 } tx_stats_t;
 
@@ -147,8 +151,11 @@ static struct {
     bool pending;
 } s_radar;
 static uint32_t s_radar_updates, s_radar_coalesced, s_radar_invalid, s_radar_deferred;
-// Publisher-owned scheduling state, never touched by the UART reader.
-static int64_t s_radar_next_publish_us, s_radar_next_failure_log_us;
+// Shared policy/deadline also protected by s_stats_lock; committed by the reader.
+static bool s_radar_enabled = true;
+static uint32_t s_radar_interval_ms = LD2450_DEFAULT_INTERVAL_MS, s_radar_epoch;
+static int64_t s_radar_next_publish_us;
+static int64_t s_radar_next_failure_log_us; // Publisher only.
 
 // Only small counter operations occur under this spinlock. Never call MQTT,
 // FreeRTOS queues or logging while holding it (MQTT callbacks hold an SDK lock).
@@ -273,11 +280,44 @@ esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
         return ESP_ERR_INVALID_ARG;
     }
     portENTER_CRITICAL(&s_stats_lock);
+    if (!s_radar_enabled) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     ++s_radar_updates;
     if (s_radar.pending) ++s_radar_coalesced;
     s_radar.report = *report;
     s_radar.received_us = received_us;
     s_radar.pending = true;
+    portEXIT_CRITICAL(&s_stats_lock);
+    return ESP_OK;
+}
+
+esp_err_t mqtt_manager_commit_ld2450_config(const mqtt_config_update_t *update)
+{
+    const config_rule_t *rule = config_rule_for_id(SENSOR_LD2450);
+    if (update == NULL || update->sensor != SENSOR_LD2450 ||
+        (update->operation != MQTT_CONFIG_ENABLED && update->operation != MQTT_CONFIG_INTERVAL) ||
+        (update->operation == MQTT_CONFIG_INTERVAL &&
+         (update->interval_ms < rule->min_interval_ms || update->interval_ms > rule->max_interval_ms))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_stats_lock);
+    if (update->operation == MQTT_CONFIG_INTERVAL) {
+        if (!s_radar_enabled) {
+            portEXIT_CRITICAL(&s_stats_lock);
+            return ESP_ERR_INVALID_STATE;
+        }
+        s_radar_interval_ms = update->interval_ms;
+        s_radar_epoch++; // Cancel an old-period sample not yet admitted to SDK.
+        s_radar_next_publish_us = now + (int64_t)s_radar_interval_ms * 1000;
+    } else if (s_radar_enabled != update->enabled) {
+        s_radar_enabled = update->enabled;
+        s_radar.pending = false;
+        s_radar_epoch++;
+        s_radar_next_publish_us = now + (int64_t)s_radar_interval_ms * 1000;
+    }
     portEXIT_CRITICAL(&s_stats_lock);
     return ESP_OK;
 }
@@ -314,20 +354,25 @@ static int format_radar(char *payload, size_t capacity, const ld2450_report_t *r
 static void service_radar_snapshot(void)
 {
     int64_t now = esp_timer_get_time();
-    if (now < s_radar_next_publish_us) return;
-    s_radar_next_publish_us = now + LD2450_PUBLISH_PERIOD_US;
+    bool busy = s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue);
+    ld2450_report_t report;
+    int64_t received_us;
+    uint32_t epoch;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (!s_radar_enabled || now < s_radar_next_publish_us) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
+    s_radar_next_publish_us = now + (int64_t)s_radar_interval_ms * 1000;
     // Preserve all eight queue slots for their existing users. Defer radar if
     // any ACK/telemetry work is pending; the reader keeps replacing its snapshot.
-    if (s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue)) {
-        portENTER_CRITICAL(&s_stats_lock);
+    if (busy) {
         if (s_radar.pending) ++s_radar_deferred;
         portEXIT_CRITICAL(&s_stats_lock);
         return;
     }
-    ld2450_report_t report;
-    int64_t received_us;
-    portENTER_CRITICAL(&s_stats_lock);
     bool pending = s_radar.pending;
+    epoch = s_radar_epoch;
     report = s_radar.report;
     received_us = s_radar.received_us;
     s_radar.pending = false;
@@ -350,6 +395,17 @@ static void service_radar_snapshot(void)
         return;
     }
     int64_t start_us = esp_timer_get_time();
+    portENTER_CRITICAL(&s_stats_lock);
+    bool admitted = s_radar_enabled && epoch == s_radar_epoch;
+    if (!admitted) ++stats->cancelled;
+    else if (start_us - received_us >= LD2450_MAX_AGE_US) {
+        ++stats->stale;
+        admitted = false;
+    }
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!admitted) return;
+    // Admission is the in-flight boundary. Never hold the spinlock across SDK
+    // calls: a subsequent disable cannot cancel this already admitted send.
     int result = esp_mqtt_client_publish(s_client, LD2450_DATA_TOPIC, payload, len, 0, 0);
     int64_t elapsed_us = esp_timer_get_time() - start_us;
     portENTER_CRITICAL(&s_stats_lock);
@@ -363,6 +419,19 @@ static void service_radar_snapshot(void)
     }
 }
 
+static TickType_t publisher_wait_ticks(void)
+{
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_stats_lock);
+    int64_t remaining = s_radar_enabled ? s_radar_next_publish_us - now : 1000000;
+    portEXIT_CRITICAL(&s_stats_lock);
+    // The old fixed 1 s wait would prevent 500 ms publication on an idle queue.
+    // Keep the existing 1 s ceiling and round up to at least one RTOS tick.
+    if (remaining > 1000000) remaining = 1000000;
+    uint32_t ms = remaining > 0 ? (uint32_t)((remaining + 999) / 1000) : 1;
+    return pdMS_TO_TICKS(ms + portTICK_PERIOD_MS - 1);
+}
+
 static void mqtt_tx_task(void *arg)
 {
     (void)arg;
@@ -373,7 +442,7 @@ static void mqtt_tx_task(void *arg)
     int64_t next_failure_log_us = 0;
     while (true) {
         service_radar_snapshot();
-        if (xQueueReceive(s_tx_queue, &message, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        if (xQueueReceive(s_tx_queue, &message, publisher_wait_ticks()) != pdTRUE) {
             update_outbox_snapshot();
             service_event_queue();
             continue;
@@ -443,6 +512,8 @@ void mqtt_manager_log_diagnostics(void)
     uint32_t connections, disconnects, errors, pubacked, deleted, event_offline, event_waits;
     uint32_t radar_updates, radar_coalesced, radar_invalid, radar_deferred;
     bool radar_pending;
+    bool radar_enabled;
+    uint32_t radar_interval_ms;
     int peak, outbox_bytes;
     int64_t observed_ms, max_query_us;
     portENTER_CRITICAL(&s_stats_lock);
@@ -463,6 +534,8 @@ void mqtt_manager_log_diagnostics(void)
     radar_invalid = s_radar_invalid;
     radar_deferred = s_radar_deferred;
     radar_pending = s_radar.pending;
+    radar_enabled = s_radar_enabled;
+    radar_interval_ms = s_radar_interval_ms;
     portEXIT_CRITICAL(&s_stats_lock);
     ESP_LOGI(TAG, "MQTT summary | boot=%08" PRIx32 " uptime_ms=%" PRId64
              " connected=%d tx_pending=%u",
@@ -483,8 +556,8 @@ void mqtt_manager_log_diagnostics(void)
              s_event_queue ? (unsigned)uxQueueMessagesWaiting(s_event_queue) : 0,
              event_offline, event_waits, EVENT_MAX_AGE_MS, ACK_OUTBOX_RESERVE_BYTES);
     ESP_LOGI(TAG, "  radar_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
-             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d period_ms=1000 max_age_ms=2000",
-             radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending);
+             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=%" PRIu32 " max_age_ms=2000",
+             radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending, radar_enabled, radar_interval_ms);
     static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event", "ld2450"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
@@ -494,10 +567,10 @@ void mqtt_manager_log_diagnostics(void)
                  s->max_tx_call_us);
         ESP_LOGI(TAG, "  drops: offline=%" PRIu32 " queue_full=%" PRIu32
                  " invalid=%" PRIu32 " stale=%" PRIu32 " outbox_full=%" PRIu32
-                 " enqueue_failed=%" PRIu32 " publish_failed=%" PRIu32,
+                 " enqueue_failed=%" PRIu32 " publish_failed=%" PRIu32 " cancelled=%" PRIu32,
                  s->offline,
                  s->queue_full, s->invalid, s->stale, s->outbox_full,
-                 s->enqueue_failed, s->publish_failed);
+                 s->enqueue_failed, s->publish_failed, s->cancelled);
     }
 }
 

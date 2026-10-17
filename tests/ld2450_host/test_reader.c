@@ -16,10 +16,19 @@ static bool is(const char *name) { return !strcmp(scenario,name); }
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
                       void *arg, unsigned priority, TaskHandle_t *handle)
 {
-    assert(!strcmp(name,"ld2450_reader") && stack==4096 && priority==3 && !arg && !handle);
+    assert(!strcmp(name,"ld2450_reader") && stack==4096 && priority==3 && !arg && handle);
     if (is("task")) return pdFALSE;
-    created=fn; return pdPASS;
+    *handle=(void *)1; created=fn; return pdPASS;
 }
+BaseType_t xTaskNotifyWait(uint32_t entry, uint32_t exit, uint32_t *value, TickType_t wait)
+{ assert(entry==0 && exit==UINT32_MAX && wait==0); return pdFALSE; }
+esp_err_t mqtt_manager_commit_ld2450_config(const mqtt_config_update_t *update)
+{ assert(false); return ESP_FAIL; }
+esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
+{ assert(false); return ESP_FAIL; }
+esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const char *reason)
+{ assert(false); return ESP_FAIL; }
+esp_err_t ld2450_sensor_discard_pending(void) { assert(false); return ESP_FAIL; }
 void vTaskDelete(TaskHandle_t task) { assert(!task); deleted++; longjmp(stopped,1); }
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { assert(!task); return 2048; }
 void vTaskDelay(TickType_t ticks)
@@ -73,8 +82,10 @@ int main(int argc,char **argv)
         sensor_status_record_read(id,ESP_OK,123);
     }
     ld2450_reader_start();
+    assert(ld2450_reader_task_handle()==NULL);
     if (created && !setjmp(stopped)) created(NULL);
     sensor_status_t s; assert(sensor_status_get(SENSOR_LD2450,&s));
+    assert(ld2450_reader_task_handle()==(s.initialized?(void *)1:NULL));
     if (is("task")) {
         assert(!inits && !created && s.state==SENSOR_UNAVAILABLE && s.error_stage==SENSOR_STAGE_TASK);
     } else if (is("init")) {

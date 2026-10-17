@@ -75,6 +75,7 @@ void ld2450_reader_start(void)
     sensor_status_configure(SENSOR_LD2450, "ld2450", true);
     sensor_status_record_init(SENSOR_LD2450, ESP_FAIL);
 }
+TaskHandle_t ld2450_reader_task_handle(void) { return NULL; }
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }

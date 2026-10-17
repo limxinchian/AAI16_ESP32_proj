@@ -20,6 +20,8 @@ static int last_qos;
 static char last_payload[LD2450_PAYLOAD_SIZE], last_topic[64];
 static unsigned critical_depth;
 static void (*publish_hook)(void);
+static void (*timer_hook)(void);
+static unsigned timer_hook_countdown, last_worker_wait;
 void test_enter_critical(void) { assert(!critical_depth); critical_depth++; }
 void test_exit_critical(void) { assert(critical_depth == 1); critical_depth--; }
 static bool failure(void) { return ++step == fail_step; }
@@ -45,6 +47,7 @@ int xQueueSend(QueueHandle_t q, const void *item, unsigned wait)
 int xQueueReceive(QueueHandle_t q, void *item, unsigned wait)
 {
     assert(!critical_depth);
+    if (wait) last_worker_wait = wait;
     if (!q->count) {
         if (wait != 0) {
             if (returned_idle) longjmp(worker_idle, 1);
@@ -135,7 +138,14 @@ int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t c)
     }
     return outbox_size;
 }
-int64_t esp_timer_get_time(void) { assert(!critical_depth); return clock_us; }
+int64_t esp_timer_get_time(void)
+{
+    assert(!critical_depth);
+    if (timer_hook && --timer_hook_countdown == 0) {
+        void (*hook)(void) = timer_hook; timer_hook = NULL; hook();
+    }
+    return clock_us;
+}
 uint32_t esp_random(void) { return 0x12345678; }
 uint32_t esp_get_free_heap_size(void) { return 100000; }
 uint32_t esp_get_minimum_free_heap_size(void) { return 90000; }
@@ -416,8 +426,6 @@ int main(void)
     rejected("{}", "missing_or_invalid_sensor");
     rejected("{\"sensor\":\"future\",\"interval_ms\":5000}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\""));
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":5000}", "unsupported_sensor");
-    assert(strstr(last_payload, "\"sensor\":\"ld2450\""));
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":\"5000\"}", "missing_or_invalid_interval_ms");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":1999}", "integer from 2000 to 10000");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":10001}", "integer from 2000 to 10000");
@@ -496,10 +504,10 @@ int main(void)
     cJSON_Delete(data);
 
     // Strict Boolean operations share the same parser, FIFO and QoS 1 ACK path.
-    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_RC522; ++sensor) {
+    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_LD2450; ++sensor) {
         for (int enabled = 0; enabled <= 1; ++enabled) {
             char payload[100]; mqtt_config_update_t update;
-            const char *name = sensor == SENSOR_DHT22 ? "dht22" : sensor == SENSOR_GY511 ? "gy511" : "rc522";
+            const char *name = sensor == SENSOR_DHT22 ? "dht22" : sensor == SENSOR_GY511 ? "gy511" : sensor == SENSOR_RC522 ? "rc522" : "ld2450";
             snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"enabled\":%s}",
                      name, enabled ? "true" : "false");
             ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
@@ -532,8 +540,6 @@ int main(void)
     rejected("{\"sensor\":\"dht22\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"future\",\"enabled\":false}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\"") && strstr(last_payload, "\"enabled\":false"));
-    rejected("{\"sensor\":\"ld2450\",\"enabled\":false}", "unsupported_sensor");
-    assert(strstr(last_payload, "\"sensor\":\"ld2450\"") && strstr(last_payload, "\"enabled\":false"));
     // RC522 uses the same parser, FIFO and ACK serializer, with its own limits.
     const unsigned rc_valid[] = {200, 201, 500, 1000, 2000};
     for (unsigned i = 0; i < sizeof(rc_valid) / sizeof(rc_valid[0]); ++i) {
@@ -624,10 +630,11 @@ int main(void)
     command(valid_cmd, len - 1, len, 0, false); pump();
     assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
     test_radar_telemetry();
+    test_radar_config();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +
-               s->invalid + s->stale + s->outbox_full + s->enqueue_failed + s->publish_failed);
+               s->invalid + s->stale + s->outbox_full + s->enqueue_failed + s->publish_failed + s->cancelled);
     }
     puts("PASS: init cleanup, bounded handoff, sequence/JSON, drop accounting, ACKs, configuration validation");
     return 0;

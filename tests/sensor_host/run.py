@@ -52,6 +52,9 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
                      "rc_burst", "rc_preempt", "rc_flood", "rc_during_read", "rc_degraded",
                      "rc_unavailable", "rc_task_failure", "rc_bus_failure", "rc_uninitialized",
                      "rc_all_config", "rc_wrap", "radar_healthy", "radar_missing", "radar_errors",
-                     "radar_init", "radar_task"]
+                     "radar_init", "radar_task", "radar_cfg_interval", "radar_cfg_gate",
+                     "radar_cfg_burst", "radar_cfg_disabled", "radar_cfg_missing", "radar_cfg_init",
+                     "radar_cfg_task", "radar_cfg_uninitialized", "radar_cfg_flush", "radar_cfg_silence",
+                     "radar_cfg_history", "radar_cfg_wrap", "radar_cfg_fragment", "radar_cfg_noise"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

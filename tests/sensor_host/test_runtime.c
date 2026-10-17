@@ -36,6 +36,16 @@ static const char *rc_scenario;
 static bool radar_active, radar_missing, radar_errors, radar_init_failure, radar_task_failure;
 static unsigned radar_inits, radar_receives, radar_valid, radar_deinits;
 static unsigned radar_snapshots;
+static unsigned radar_discards, radar_commits;
+static uint32_t radar_interval_ms = 1000;
+static bool radar_enabled = true, radar_discard_failure, radar_resume_silence;
+static int64_t radar_last_handoff = -1;
+static bool radar_disabled_errors, radar_health_saved;
+static sensor_status_t radar_disabled_health;
+static int64_t radar_resumed_at = -1, radar_first_delay_us;
+static bool radar_resume_fragment;
+static bool radar_resume_noise;
+static unsigned radar_resume_reads;
 static unsigned diagnostics_paused, dht_inits, gy_inits;
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
 static int64_t dht_times[64], gy_times[64];
@@ -115,7 +125,7 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
     assert(task_index() == 0 && stack == 4096);
     int index = !strcmp(name, "gy511_reader") ? 1 : !strcmp(name, "rc522_reader") ? 2 : 3;
     assert(index == 1 ? priority == 4 : priority == 3);
-    assert(index == 3 ? (!strcmp(name, "ld2450_reader") && !handle) : handle != NULL);
+    assert(handle != NULL && (index != 3 || !strcmp(name, "ld2450_reader")));
     if (index == 1 ? task_failure : index == 2 ? rc_task_failure : (!radar_active || radar_task_failure)) return pdFALSE;
     pthread_mutex_lock(&scheduler_lock);
     tasks[index].exists = true;
@@ -138,7 +148,7 @@ void vTaskDelete(TaskHandle_t task)
 }
 BaseType_t xTaskNotify(TaskHandle_t handle, uint32_t value, eNotifyAction action)
 {
-    assert(task_index() == 0 && (handle == &tasks[1] || handle == &tasks[2]) && action == eSetValueWithoutOverwrite);
+    assert(task_index() == 0 && (handle == &tasks[1] || handle == &tasks[2] || handle == &tasks[3]) && action == eSetValueWithoutOverwrite);
     sim_task_t *task = handle;
     assert(!task->finished); // Never notify a deleted initialization-failure task.
     if (task->notified) { notify_busy++; return pdFALSE; }
@@ -166,22 +176,57 @@ esp_err_t wifi_manager_start(void) { return ESP_OK; }
 esp_err_t ld2450_sensor_init(void)
 { radar_inits++; return radar_init_failure ? ESP_ERR_NO_MEM : ESP_OK; }
 esp_err_t ld2450_sensor_deinit(void) { radar_deinits++; return ESP_OK; }
+esp_err_t ld2450_sensor_discard_pending(void)
+{
+    assert(task_index() == 3 && !radar_enabled);
+    radar_discards++;
+    return radar_discard_failure ? ESP_FAIL : ESP_OK;
+}
 esp_err_t ld2450_sensor_receive(ld2450_report_t *report, unsigned *frames)
 {
     assert(task_index() == 3); radar_receives++;
+    sensor_status_t health; assert(sensor_status_get(SENSOR_LD2450, &health));
+    if (radar_health_saved) {
+        assert(health.state == SENSOR_DISABLED && !radar_enabled);
+        assert(health.read_successes == radar_disabled_health.read_successes &&
+               health.read_failures == radar_disabled_health.read_failures &&
+               health.last_success_us == radar_disabled_health.last_success_us &&
+               health.last_error == radar_disabled_health.last_error &&
+               health.consecutive_failures == radar_disabled_health.consecutive_failures);
+    }
     vTaskDelay(pdMS_TO_TICKS(100)); // Real application services configuration while UART blocks.
     *frames = 0;
-    if (radar_missing) return ESP_OK;
+    if (radar_missing || test_now_us - base_us < radar_first_delay_us) return ESP_OK;
+    if (radar_resume_silence && radar_discards) return ESP_OK;
+    if (radar_resume_noise && radar_discards) return ESP_ERR_INVALID_RESPONSE;
+    if (radar_disabled_errors && !radar_enabled) return ESP_FAIL;
     if (radar_errors && radar_valid) return ESP_FAIL;
+    if (radar_resume_fragment && radar_discards && ++radar_resume_reads == 1) return ESP_ERR_INVALID_RESPONSE;
     *report = (ld2450_report_t){0}; // No-target reports still prove communication.
-    *frames = 1; radar_valid++; return ESP_OK;
+    *frames = 1; radar_valid++;
+    return radar_resume_fragment && radar_resume_reads == 2 ? ESP_ERR_INVALID_RESPONSE : ESP_OK;
 }
 void ld2450_sensor_get_diagnostics(ld2450_diagnostics_t *d)
 { *d = (ld2450_diagnostics_t){.frames = radar_valid}; }
 esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report, int64_t received_us)
 {
     assert(task_index() == 3 && report->count == 0 && received_us == test_now_us);
-    assert(++radar_snapshots == radar_valid);
+    assert(radar_enabled && sensor_status_can_sample(SENSOR_LD2450));
+    if (radar_resumed_at >= 0) assert(received_us > radar_resumed_at);
+    radar_snapshots++; radar_last_handoff = received_us;
+    return ESP_OK;
+}
+esp_err_t mqtt_manager_commit_ld2450_config(const mqtt_config_update_t *update)
+{
+    assert(task_index() == 3 && update->sensor == SENSOR_LD2450);
+    if (update->operation == MQTT_CONFIG_ENABLED) {
+        if (update->enabled && !radar_enabled) assert(radar_discards && !radar_discard_failure);
+        radar_enabled = update->enabled;
+    } else {
+        assert(radar_enabled && update->interval_ms >= 500 && update->interval_ms <= 10000);
+        radar_interval_ms = update->interval_ms;
+    }
+    radar_commits++;
     return ESP_OK;
 }
 esp_err_t spi_bus_manager_init(void) { return rc_active ? ESP_OK : ESP_FAIL; }
@@ -262,12 +307,29 @@ bool mqtt_manager_take_config_update(mqtt_config_update_t *update)
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
     // In particular, the dispatcher must NEVER ACK a forwarded GY-511 update.
-    assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : update->sensor == SENSOR_RC522 ? 2 : 0));
+    assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : update->sensor == SENSOR_RC522 ? 2 : update->sensor == SENSOR_LD2450 ? 3 : 0));
+    if (update->sensor == SENSOR_LD2450) {
+        assert(radar_commits > 0);
+        assert(update->operation == MQTT_CONFIG_ENABLED ? radar_enabled == update->enabled : radar_interval_ms == update->interval_ms);
+    }
     sensor_status_t status;
     assert(sensor_status_get(update->sensor, &status));
     if (update->operation == MQTT_CONFIG_ENABLED) {
         // State must already be committed when the ACK API is called.
         assert(update->enabled ? sensor_status_can_sample(update->sensor) : status.state == SENSOR_DISABLED);
+        if (update->sensor == SENSOR_LD2450) {
+            if (update->enabled && radar_health_saved) {
+                assert(status.read_successes == radar_disabled_health.read_successes &&
+                       status.read_failures == radar_disabled_health.read_failures &&
+                       status.last_success_us == radar_disabled_health.last_success_us &&
+                       status.last_error == radar_disabled_health.last_error &&
+                       status.consecutive_failures == radar_disabled_health.consecutive_failures);
+                assert(status.state == (status.error_stage == SENSOR_STAGE_READ ? SENSOR_DEGRADED : SENSOR_READY));
+                radar_health_saved = false; radar_resumed_at = test_now_us;
+            } else if (!update->enabled) {
+                radar_health_saved = true; radar_disabled_health = status;
+            }
+        }
     }
     assert(ack_count < 32);
     acks[ack_count++] = (ack_t){.update = *update, .applied = true, .at_us = test_now_us - base_us,
@@ -279,7 +341,9 @@ esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const c
 {
     sensor_status_t status;
     assert(sensor_status_get(update->sensor, &status));
-    assert(!strcmp(reason, status.state == SENSOR_DISABLED ? "sensor_disabled" : "sensor_unavailable"));
+    bool failed_resume = update->sensor == SENSOR_LD2450 && radar_discard_failure &&
+                         update->operation == MQTT_CONFIG_ENABLED && update->enabled;
+    assert(!strcmp(reason, status.state == SENSOR_DISABLED && !failed_resume ? "sensor_disabled" : "sensor_unavailable"));
     assert(!sensor_status_can_sample(update->sensor));
     assert(ack_count < 32);
     acks[ack_count++] = (ack_t){.update = *update, .applied = false, .at_us = test_now_us - base_us,
@@ -319,7 +383,7 @@ static void verify_commands(void)
     assert(dht_tx == dht_count && gy_tx == gy_count - (gy_read_error ? 1U : 0U) && diagnostics > 0);
     // FIFO application/ACK order within each sensor, including rejections at
     // the owner. Cross-sensor ACK order need not match the original FIFO.
-    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_RC522; ++sensor) {
+    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_LD2450; ++sensor) {
         unsigned cursor = 0;
         for (unsigned i = 0; i < input_count; ++i) {
             const input_t *in = &inputs[i];
@@ -697,10 +761,105 @@ static void test_radar(const char *scenario)
     printf("PASS: LD2450 four-sensor isolation scenario %s\n", scenario);
 }
 
+static void test_radar_config(const char *scenario)
+{
+    radar_active = rc_active = true;
+    rc_scenario = "rc_default";
+    radar_missing = !strcmp(scenario, "radar_cfg_missing");
+    radar_init_failure = !strcmp(scenario, "radar_cfg_init");
+    radar_task_failure = !strcmp(scenario, "radar_cfg_task");
+    radar_discard_failure = !strcmp(scenario, "radar_cfg_flush");
+    radar_resume_silence = !strcmp(scenario, "radar_cfg_silence");
+    radar_errors = !strcmp(scenario, "radar_cfg_history");
+    radar_disabled_errors = !strcmp(scenario, "radar_cfg_gate");
+    radar_resume_fragment = !strcmp(scenario, "radar_cfg_fragment");
+    radar_resume_noise = !strcmp(scenario, "radar_cfg_noise");
+    bool unavailable = radar_missing || radar_init_failure || radar_task_failure;
+    bool interval = !strcmp(scenario, "radar_cfg_interval");
+    bool burst = !strcmp(scenario, "radar_cfg_burst");
+    bool paused = !strcmp(scenario, "radar_cfg_disabled");
+    if (!strcmp(scenario, "radar_cfg_wrap")) base_us = ((int64_t)UINT32_MAX - 30) * 10000;
+    test_now_us = base_us;
+    if (!strcmp(scenario, "radar_cfg_uninitialized")) {
+        radar_first_delay_us = 4000000;
+        gate_input(0, SENSOR_LD2450, true);
+        inputs[input_count-1].rejection = "sensor_unavailable";
+    }
+    input(2350000, SENSOR_DHT22, 5000);
+    input(2350000, SENSOR_GY511, 1000);
+    input(2350000, SENSOR_RC522, 500);
+    if (unavailable) {
+        input(2750000, SENSOR_LD2450, 2000); inputs[input_count-1].rejection = "sensor_unavailable";
+        gate_input(5500000, SENSOR_LD2450, false); inputs[input_count-1].rejection = "sensor_unavailable";
+        gate_input(6000000, SENSOR_LD2450, true); inputs[input_count-1].rejection = "sensor_unavailable";
+    } else if (radar_first_delay_us) {
+        input(4500000, SENSOR_LD2450, 500);
+    } else if (interval) {
+        input(2750000, SENSOR_LD2450, 2000);
+        input(4500000, SENSOR_LD2450, 500);
+        input(6000000, SENSOR_LD2450, 10000);
+    } else if (burst) {
+        gate_input(3000000, SENSOR_LD2450, false);
+        input(3000000, SENSOR_LD2450, 500); inputs[input_count-1].rejection = "sensor_disabled";
+        gate_input(3000000, SENSOR_LD2450, true);
+        input(3000000, SENSOR_LD2450, 10000);
+    } else {
+        input(2750000, SENSOR_LD2450, 2000);
+        gate_input(3000000, SENSOR_LD2450, false);
+        input(3200000, SENSOR_LD2450, 500); inputs[input_count-1].rejection = "sensor_disabled";
+        gate_input(3500000, SENSOR_LD2450, false); // Repeated disable preserves history.
+        if (!paused) {
+            gate_input(5500000, SENSOR_LD2450, true);
+            if (radar_discard_failure) inputs[input_count-1].rejection = "sensor_unavailable";
+            gate_input(5800000, SENSOR_LD2450, true); // Idempotent enable doesn't postpone timeout.
+            if (radar_discard_failure) inputs[input_count-1].rejection = "sensor_unavailable";
+        }
+    }
+    simulate(); verify_commands();
+    assert(dht_count == 2 && gy_count == 11 && rc_count == 24 && rc_tx == 1);
+    assert(radar_inits == (radar_task_failure ? 0U : 1U));
+    sensor_status_t s; assert(sensor_status_get(SENSOR_LD2450, &s));
+    if (unavailable) {
+        assert(s.state == SENSOR_UNAVAILABLE && !radar_commits && !radar_snapshots);
+        assert(ld2450_reader_task_handle() == NULL && radar_discards == 0);
+    } else {
+        assert(ld2450_reader_task_handle() == &tasks[3] && radar_deinits == 0);
+        assert(radar_receives > 70); // Disabled radar still drains at the same cadence.
+        if (paused || radar_discard_failure) {
+            assert(s.state == SENSOR_DISABLED && !radar_enabled && radar_health_saved);
+            assert(s.read_failures == 0 && s.last_success_us == radar_disabled_health.last_success_us);
+            assert(radar_snapshots == s.read_successes && radar_interval_ms == 2000);
+            assert(radar_discards == (paused ? 0U : 2U));
+        } else if (radar_resume_silence || radar_errors || radar_resume_noise) {
+            assert(s.state == SENSOR_DEGRADED && s.read_failures > 0 && radar_discards == 1);
+            assert(s.last_success_us < radar_resumed_at && radar_last_handoff == s.last_success_us);
+            if (radar_resume_silence) assert(s.read_failures == 1); // New 2 s grace after enable.
+            if (radar_resume_noise) assert(s.read_failures > 4); // Resync grace cannot reopen after timeout.
+        } else {
+            assert(s.state == SENSOR_READY && !s.read_failures && radar_enabled);
+            assert(radar_interval_ms == (interval || burst ? 10000U : radar_first_delay_us ? 500U : 2000U));
+            assert(radar_discards == (interval || radar_first_delay_us ? 0U : 1U));
+        }
+        if (burst) assert(notify_busy > 0);
+        for (unsigned i = 0; i < ack_count; ++i) {
+            if (acks[i].update.sensor == SENSOR_LD2450 && acks[i].applied) {
+                // Read begins at N*110 ms; commit is between batches, never
+                // within the blocking receive or by the MQTT/application callback.
+                assert(acks[i].at_us % 110000 == 0);
+            }
+        }
+    }
+    for (sensor_id_t id=SENSOR_DHT22; id<=SENSOR_RC522; ++id) {
+        assert(sensor_status_get(id,&s) && s.state==SENSOR_READY && !s.read_failures);
+    }
+    printf("PASS: LD2450 owner configuration, continuous draining and isolation %s\n", scenario);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
     const char *scenario = argv[1];
+    if (!strncmp(scenario, "radar_cfg_", 10)) { test_radar_config(scenario); return 0; }
     if (!strncmp(scenario, "radar_", 6)) { test_radar(scenario); return 0; }
     if (!strncmp(scenario, "rc_", 3)) { test_rc522_config(scenario); return 0; }
     if (!strncmp(scenario, "gate_", 5)) { test_gates(scenario); return 0; }

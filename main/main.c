@@ -266,9 +266,11 @@ void app_main(void)
         for (unsigned commands = 0; commands < 4 &&
              mqtt_manager_peek_config_update(&update); ++commands)
         {
-            if (update.sensor == SENSOR_GY511 || update.sensor == SENSOR_RC522) {
+            if (update.sensor == SENSOR_GY511 || update.sensor == SENSOR_RC522 ||
+                update.sensor == SENSOR_LD2450) {
                 TaskHandle_t reader = update.sensor == SENSOR_GY511 ?
-                    s_gy511_task : rc522_reader_task_handle();
+                    s_gy511_task : update.sensor == SENSOR_RC522 ?
+                    rc522_reader_task_handle() : ld2450_reader_task_handle();
                 if (reader == NULL) {
                     mqtt_manager_take_config_update(&update);
                     (void)mqtt_manager_reject_config(&update, "sensor_unavailable");

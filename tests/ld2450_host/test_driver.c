@@ -58,6 +58,7 @@ int main(void)
 {
     ld2450_report_t r; unsigned frames=123;
     assert(ld2450_sensor_receive(&r,&frames)==ESP_ERR_INVALID_STATE && !frames);
+    assert(ld2450_sensor_discard_pending()==ESP_ERR_INVALID_STATE);
     assert(ld2450_sensor_receive(NULL,&frames)==ESP_ERR_INVALID_ARG);
     assert(ld2450_sensor_receive(&r,NULL)==ESP_ERR_INVALID_ARG);
     for (unsigned step=1; step<=3; ++step) {
@@ -100,6 +101,22 @@ int main(void)
     length_fail=true; assert(ld2450_sensor_receive(&r,&frames)==ESP_FAIL && !frames); length_fail=false;
     flush_fail=true; event(UART_BUFFER_FULL); assert(ld2450_sensor_receive(&r,&frames)==ESP_FAIL); flush_fail=false;
     append(idle,30); assert(ld2450_sensor_receive(&r,&frames)==ESP_OK && frames==1);
+    // Resume discards both an incomplete parser frame and queued full frames,
+    // accounts for old UART errors, and retains initialization/counter history.
+    append(idle,13); assert(ld2450_sensor_receive(&r,&frames)==ESP_OK && !frames);
+    append(idle+13,17); append(idle,30); event(UART_FRAME_ERR);
+    unsigned old_frames=s_parser.frames, old_errors=s_diag.uart_errors;
+    assert(ld2450_sensor_discard_pending()==ESP_OK);
+    assert(!used && !s_parser.used && !queued && installed && s_initialized);
+    assert(s_parser.frames==old_frames && s_diag.uart_errors==old_errors+1);
+    assert(ld2450_sensor_receive(&r,&frames)==ESP_OK && !frames);
+    // A frame already on the wire can leave its tail after the flush. It must
+    // be discarded, with only the subsequent complete frame returned as valid.
+    append(idle+13,17); append(idle,30);
+    assert(ld2450_sensor_receive(&r,&frames)==ESP_ERR_INVALID_RESPONSE && frames==1);
+    assert(s_parser.frames==old_frames+1 && !r.count);
+    flush_fail=true; assert(ld2450_sensor_discard_pending()==ESP_FAIL); flush_fail=false;
+    length_fail=true; assert(ld2450_sensor_discard_pending()==ESP_FAIL); length_fail=false;
     ld2450_diagnostics_t d; ld2450_sensor_get_diagnostics(&d);
     assert(d.frames==s_parser.frames && d.discarded_bytes>200 && installs==1 && !deletes);
     assert(ld2450_sensor_deinit()==ESP_OK && !installed && deletes==1);

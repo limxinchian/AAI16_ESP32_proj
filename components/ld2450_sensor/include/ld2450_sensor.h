@@ -45,6 +45,9 @@ typedef struct {
 // UART setup alone is NOT evidence that the radar is connected.
 esp_err_t ld2450_sensor_init(void);
 esp_err_t ld2450_sensor_deinit(void);
+// Owner-only resume boundary: discard buffered input, queued old UART events
+// and partial parser state, preserving driver ownership and diagnostics.
+esp_err_t ld2450_sensor_discard_pending(void);
 // Wait at most 100 ms, process at most 256 bytes, retain only the latest report.
 // *frames counts all complete reports in this batch. A framing error may coexist
 // with valid reports after resynchronization; UART errors invalidate the batch.

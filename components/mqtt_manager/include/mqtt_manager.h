@@ -52,7 +52,8 @@ esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_lengt
 // Call only for a validated radar report, with its acquisition timestamp.
 // Copies one latest snapshot under a short spinlock; no queue wait or SDK call.
 // New reports replace pending ones, including offline. The existing publisher
-// samples this mailbox at most once/second, at QoS 0, retain=0. Reports aged
+// samples this mailbox at the configured period (default 1000 ms), QoS 0,
+// retain=0. Disabled updates are rejected with ESP_ERR_INVALID_STATE. Reports aged
 // >=2 s are dropped, and a consumed report is never resent without an update.
 // seq counts publication attempts (including offline/stale drops), not frames;
 // uptime_ms is acquisition time. Pending ACK/telemetry queue work takes priority.
@@ -60,6 +61,15 @@ esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_lengt
 // sensor status. This path uses neither the shared TX queue nor the QoS 1 outbox.
 esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
                                              int64_t received_us);
+
+// LD2450 reader owner only, after generic availability/disabled-policy checks.
+// Atomically commit the publication gate/interval; never call the MQTT SDK.
+// Interval changes restart the deadline from commit time. A gate transition
+// clears pending data; enable waits one retained interval and requires a fresh
+// handoff. Repeated enabled=true leaves the existing deadline/data untouched.
+// The owner must discard pre-enable UART bytes before enabling, and commit
+// Sensor Status before issuing the applied ACK. Already admitted sends may complete.
+esp_err_t mqtt_manager_commit_ld2450_config(const mqtt_config_update_t *update);
 
 // Publish only after the acquisition owner commits the requested operation.
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update);
@@ -84,10 +94,11 @@ esp_err_t mqtt_manager_publish_gy511(
 // Both calls are nonblocking; the MQTT callback only appends to this queue.
 // Exactly one operation per command. Owners reject interval changes while
 // disabled with sensor_disabled; the previous interval is retained on resume.
-// Disable commits between reads and pauses acquisition, not hardware power.
+// Disable commits between reads and pauses acquisition, not hardware power;
+// LD2450 instead keeps draining UART, pausing telemetry and health updates.
 // Previously queued telemetry may still arrive afterward. Re-enable resets the
 // deadline by one retained period; an already enabled sensor keeps its deadline.
-// All three sensors start enabled with default intervals after each boot.
+// All four sensors start enabled with default intervals after each boot.
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
 bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
 

@@ -20,6 +20,8 @@ typedef int esp_err_t;
 #define pdPASS 1
 #define portMAX_DELAY UINT32_MAX
 #define pdMS_TO_TICKS(ms) (ms)
+#define portTICK_PERIOD_MS 1
+typedef uint32_t TickType_t;
 typedef int portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED 0
 void test_enter_critical(void);

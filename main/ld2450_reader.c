@@ -2,6 +2,7 @@
 #include "ld2450_sensor.h"
 #include "sensor_status.h"
 #include "mqtt_manager.h"
+#include "sensor_config.h"
 #include <inttypes.h>
 #include <math.h>
 #include "esp_log.h"
@@ -12,6 +13,8 @@
 #define FIRST_REPORT_US 5000000LL
 #define SILENCE_US 2000000LL
 #define SUMMARY_US 10000000LL
+
+static TaskHandle_t s_ld2450_task;
 
 static void log_diagnostics(unsigned timeouts, int64_t age_us)
 {
@@ -54,15 +57,89 @@ static void ld2450_reader_task(void *arg)
     int64_t started = esp_timer_get_time(), last_valid = -1;
     int64_t next_silence = started + SILENCE_US, next_warning = 0;
     int64_t next_summary = started + SUMMARY_US, next_change_log = 0;
+    int64_t resync_until = 0;
     unsigned displayed_mask = UINT32_MAX, timeouts = 0;
+    bool enabled = true, fresh_report = false;
     ld2450_report_t report = {0};
     ESP_LOGI("LD2450", "Waiting for first valid report (5000 ms); MQTT latest snapshot at ~1 Hz");
     while (true) {
+        // Same no-overwrite notification handoff as the other reader owners.
+        // UART waits are <=100 ms, so no extra control task/queue is necessary.
+        for (unsigned commands = 0; commands < 4; ++commands) {
+            uint32_t control;
+            if (xTaskNotifyWait(0, UINT32_MAX, &control, 0) != pdTRUE) break;
+            mqtt_config_update_t update = {.sensor = SENSOR_LD2450};
+            if (control & CONFIG_ENABLED_FLAG) {
+                update.operation = MQTT_CONFIG_ENABLED;
+                update.enabled = (control & 1) != 0;
+            } else {
+                update.operation = MQTT_CONFIG_INTERVAL;
+                update.interval_ms = control;
+            }
+            sensor_status_t status;
+            if (!config_can_apply(&update, &status)) continue;
+            if (update.operation == MQTT_CONFIG_ENABLED && update.enabled && !enabled) {
+                // A report assembled from pre-enable bytes must not become a
+                // new measurement. Flush only on an actual disabled->enabled edge.
+                err = ld2450_sensor_discard_pending();
+                if (err != ESP_OK) {
+                    ESP_LOGW("LD2450", "Resume input discard failed: %s; remains disabled", esp_err_to_name(err));
+                    (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
+                    continue;
+                }
+            }
+            if (update.operation == MQTT_CONFIG_ENABLED &&
+                sensor_status_set_enabled(SENSOR_LD2450, update.enabled) != ESP_OK) {
+                (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
+                continue;
+            }
+            // Commit the publisher gate/period atomically with mailbox reset.
+            // This never waits for the SDK; an already admitted send can finish.
+            err = mqtt_manager_commit_ld2450_config(&update);
+            if (err != ESP_OK) {
+                if (update.operation == MQTT_CONFIG_ENABLED) {
+                    (void)sensor_status_set_enabled(SENSOR_LD2450, status.state != SENSOR_DISABLED);
+                }
+                (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
+                continue;
+            }
+            if (update.operation == MQTT_CONFIG_ENABLED) {
+                if (update.enabled != enabled) {
+                    fresh_report = false;
+                    report = (ld2450_report_t){0};
+                    next_silence = esp_timer_get_time() + SILENCE_US;
+                    resync_until = update.enabled ? next_silence : 0;
+                    next_warning = 0;
+                    displayed_mask = UINT32_MAX;
+                }
+                enabled = update.enabled;
+                ESP_LOGI("LD2450", "[CONFIG] enabled applied: %s; UART draining continues", enabled ? "true" : "false");
+            } else {
+                ESP_LOGI("LD2450", "[CONFIG] MQTT interval applied: %lu ms; UART rate unchanged", (unsigned long)update.interval_ms);
+            }
+            (void)mqtt_manager_publish_config_ack(&update);
+        }
         unsigned frames = 0;
         err = ld2450_sensor_receive(&report, &frames);
         int64_t now = esp_timer_get_time();
+        if (!enabled) {
+            // Keep consuming the bounded UART stream and its driver diagnostics,
+            // but freeze health history, suppress reports and create no snapshots.
+            if (now >= next_summary) {
+                log_diagnostics(timeouts, last_valid < 0 ? -1 : now - last_valid);
+                next_summary = now + SUMMARY_US;
+            }
+            vTaskDelay(1);
+            continue;
+        }
         if (frames && last_valid < 0) sensor_status_record_init(SENSOR_LD2450, ESP_OK);
-        if (err != ESP_OK) {
+        // Resume flushing can split an on-wire frame. Until a fresh report (or
+        // the 2 s silence deadline), keep framing resync in driver diagnostics
+        // without inventing a health failure from the intentional boundary.
+        // Actual UART faults are still recorded immediately.
+        bool resync_grace = !fresh_report && now < resync_until &&
+                            err == ESP_ERR_INVALID_RESPONSE;
+        if (err != ESP_OK && !resync_grace) {
             // Startup errors remain diagnostic evidence until the first-report
             // deadline. Do not falsely mark the unproven sensor initialized.
             sensor_status_record_read(SENSOR_LD2450, err, now);
@@ -72,6 +149,7 @@ static void ld2450_reader_task(void *arg)
             }
         }
         if (frames) {
+            fresh_report = true;
             for (unsigned i = 0; i < frames; ++i) sensor_status_record_read(SENSOR_LD2450, ESP_OK, now);
             last_valid = now;
             next_silence = now + SILENCE_US;
@@ -101,7 +179,7 @@ static void ld2450_reader_task(void *arg)
         bool summary = now >= next_summary;
         // Coalesce slot-presence changes to at most one group/second. Position
         // and speed changes appear in the 10-second summary, not every frame.
-        if (last_valid >= 0 && now - last_valid < SILENCE_US &&
+        if (fresh_report && now - last_valid < SILENCE_US &&
             (summary || (mask != displayed_mask && now >= next_change_log))) {
             log_report(&report);
             displayed_mask = mask;
@@ -120,8 +198,16 @@ static void ld2450_reader_task(void *arg)
 void ld2450_reader_start(void)
 {
     sensor_status_configure(SENSOR_LD2450, "ld2450", true);
-    if (xTaskCreate(ld2450_reader_task, "ld2450_reader", 4096, NULL, 3, NULL) != pdPASS) {
+    if (xTaskCreate(ld2450_reader_task, "ld2450_reader", 4096, NULL, 3, &s_ld2450_task) != pdPASS) {
         sensor_status_record_unavailable(SENSOR_LD2450, SENSOR_STAGE_TASK, ESP_ERR_NO_MEM);
         ESP_LOGE("LD2450", "Reader task creation failed; other sensors continue");
     }
+}
+
+TaskHandle_t ld2450_reader_task_handle(void)
+{
+    sensor_status_t status;
+    if (!sensor_status_get(SENSOR_LD2450, &status) || !status.initialized ||
+        status.state == SENSOR_UNAVAILABLE || status.state == SENSOR_UNINITIALIZED) return NULL;
+    return s_ld2450_task;
 }

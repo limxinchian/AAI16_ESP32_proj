@@ -92,6 +92,15 @@ static esp_err_t discard_input(void)
     return err != ESP_OK ? err : flush;
 }
 
+esp_err_t ld2450_sensor_discard_pending(void)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    // Account for events accumulated while disabled without carrying those
+    // old faults into the resumed health state. New events remain queued.
+    (void)drain_events();
+    return discard_input();
+}
+
 esp_err_t ld2450_sensor_receive(ld2450_report_t *latest, unsigned *frames)
 {
     if (!latest || !frames) return ESP_ERR_INVALID_ARG;
