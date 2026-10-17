@@ -43,6 +43,9 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
                   "unavailable_flood"] if name == "test_app" else [None])
     if name == "test_runtime":
         scenarios = ["default", "changes", "mixed", "burst", "shorten", "rounding",
-                     "during_read", "gy_unavailable", "gy_task_failure", "dht_unavailable", "tick_wrap"]
+                     "during_read", "gy_unavailable", "gy_task_failure", "dht_unavailable", "tick_wrap",
+                     "gate_gy", "gate_dht", "gate_both", "gate_burst", "gate_preempt", "gate_read",
+                     "gate_dht_read", "gate_gy_unavailable", "gate_task_unavailable", "gate_dht_unavailable",
+                     "gate_degraded", "gate_wrap"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

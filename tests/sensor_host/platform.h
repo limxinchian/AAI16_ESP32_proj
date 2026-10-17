@@ -25,6 +25,7 @@ typedef void *TaskHandle_t;
 // Match this project's 100 Hz tick configuration.
 #define pdMS_TO_TICKS(ms) ((ms) / 10)
 #define portTICK_PERIOD_MS 10
+#define portMAX_DELAY UINT32_MAX
 typedef enum { eSetValueWithoutOverwrite } eNotifyAction;
 BaseType_t xTaskNotify(TaskHandle_t task, uint32_t value, eNotifyAction action);
 BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,

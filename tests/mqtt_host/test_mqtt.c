@@ -137,8 +137,8 @@ static void rejected(const char *s, const char *reason)
     assert(strstr(last_payload, "\"status\":\"rejected\""));
     assert(strstr(last_payload, reason));
     assert(last_qos == 1);
-    mqtt_interval_update_t update;
-    assert(!mqtt_manager_take_interval_update(&update));
+    mqtt_config_update_t update;
+    assert(!mqtt_manager_take_config_update(&update));
 }
 
 int main(void)
@@ -216,25 +216,25 @@ int main(void)
         assert(publish_calls == publications + 2 && outbox_size == occupancies[i]);
         assert(s_stats[TX_DHT22].outbox_full == 0 && s_stats[TX_GY511].outbox_full == 0);
     }
-    assert(mqtt_manager_publish_config_ack(SENSOR_DHT22, 5000) == ESP_OK); pump();
+    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}) == ESP_OK); pump();
     assert(strstr(last_payload, "\"status\":\"applied\"") && last_qos == 1);
-    mqtt_interval_update_t unavailable = {SENSOR_DHT22, 5000};
+    mqtt_config_update_t unavailable = {.sensor = SENSOR_DHT22, .interval_ms = 5000};
     assert(mqtt_manager_reject_config(&unavailable, "sensor_unavailable") == ESP_OK); pump();
     assert(!strcmp(last_topic, CONFIG_ACK_TOPIC) && last_qos == 1);
     assert(strstr(last_payload, "\"sensor\":\"dht22\""));
     assert(strstr(last_payload, "\"status\":\"rejected\""));
     assert(strstr(last_payload, "\"reason\":\"sensor_unavailable\""));
     assert(!strstr(last_payload, "applied") && strstr(last_payload, "\"interval_ms\":5000"));
-    unavailable = (mqtt_interval_update_t){SENSOR_GY511, 1000};
+    unavailable = (mqtt_config_update_t){.sensor = SENSOR_GY511, .interval_ms = 1000};
     assert(mqtt_manager_reject_config(&unavailable, "sensor_unavailable") == ESP_OK); pump();
     assert(strstr(last_payload, "\"sensor\":\"gy511\"") && last_qos == 1);
     assert(strstr(last_payload, "\"interval_ms\":1000"));
     outbox_size = 0;
     enqueue_result = -2;
-    assert(mqtt_manager_publish_config_ack(SENSOR_DHT22, 5000) == ESP_OK); pump();
+    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}) == ESP_OK); pump();
     assert(s_stats[TX_CONFIG_ACK].outbox_full == 1);
     enqueue_result = -1;
-    assert(mqtt_manager_publish_config_ack(SENSOR_DHT22, 5000) == ESP_OK); pump();
+    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}) == ESP_OK); pump();
     assert(s_stats[TX_CONFIG_ACK].enqueue_failed == 1);
     publish_result = -1;
     assert(mqtt_manager_publish_dht22(25, 50) == ESP_OK); pump();
@@ -251,10 +251,10 @@ int main(void)
 
     const unsigned valid[] = {2000, 5000, 10000};
     for (unsigned i = 0; i < 3; i++) {
-        char payload[100]; mqtt_interval_update_t update;
+        char payload[100]; mqtt_config_update_t update;
         snprintf(payload, sizeof(payload), "{\"sensor\":\"dht22\",\"interval_ms\":%u}", valid[i]);
         json_command(payload);
-        assert(mqtt_manager_take_interval_update(&update) && update.interval_ms == valid[i]);
+        assert(mqtt_manager_take_config_update(&update) && update.interval_ms == valid[i]);
         assert(update.sensor == SENSOR_DHT22);
     }
     rejected("{", "invalid_json");
@@ -285,15 +285,15 @@ int main(void)
     for (int i = 0; i < CONFIG_QUEUE_SIZE + 1; i++) json_command(valid_cmd);
     pump(); assert(strstr(last_payload, "queue_full"));
     for (int i = 0; i < CONFIG_QUEUE_SIZE; i++) {
-        mqtt_interval_update_t update;
-        assert(mqtt_manager_take_interval_update(&update) && update.interval_ms == 5000);
+        mqtt_config_update_t update;
+        assert(mqtt_manager_take_config_update(&update) && update.interval_ms == 5000);
         assert(update.sensor == SENSOR_DHT22);
     }
 
     // One parser and FIFO for both sensors; peeking must not consume or ACK.
-    const mqtt_interval_update_t burst[] = {
-        {SENSOR_GY511, 1000}, {SENSOR_DHT22, 5000},
-        {SENSOR_GY511, 2000}, {SENSOR_GY511, 500}
+    const mqtt_config_update_t burst[] = {
+        {.sensor = SENSOR_GY511, .interval_ms = 1000}, {.sensor = SENSOR_DHT22, .interval_ms = 5000},
+        {.sensor = SENSOR_GY511, .interval_ms = 2000}, {.sensor = SENSOR_GY511, .interval_ms = 500}
     };
     uint32_t ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
     for (unsigned i = 0; i < 4; ++i) {
@@ -307,13 +307,13 @@ int main(void)
     assert(strstr(last_payload, "queue_full") && strstr(last_payload, "\"sensor\":\"gy511\""));
     assert(strstr(last_payload, "\"interval_ms\":10000"));
     for (unsigned i = 0; i < 4; ++i) {
-        mqtt_interval_update_t peek, update;
-        assert(mqtt_manager_peek_interval_update(&peek));
+        mqtt_config_update_t peek, update;
+        assert(mqtt_manager_peek_config_update(&peek));
         assert(uxQueueMessagesWaiting(s_config_queue) == 4 - i);
-        assert(mqtt_manager_take_interval_update(&update));
+        assert(mqtt_manager_take_config_update(&update));
         assert(peek.sensor == burst[i].sensor && peek.interval_ms == burst[i].interval_ms);
         assert(update.sensor == peek.sensor && update.interval_ms == peek.interval_ms);
-        assert(mqtt_manager_publish_config_ack(update.sensor, update.interval_ms) == ESP_OK); pump();
+        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
         data = cJSON_Parse(last_payload);
         assert(!strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring,
                        update.sensor == SENSOR_GY511 ? "gy511" : "dht22"));
@@ -322,10 +322,10 @@ int main(void)
     }
     const unsigned gy_valid[] = {500, 501, 1000, 2000, 10000};
     for (unsigned i = 0; i < sizeof(gy_valid) / sizeof(gy_valid[0]); ++i) {
-        char payload[100]; mqtt_interval_update_t update;
+        char payload[100]; mqtt_config_update_t update;
         snprintf(payload, sizeof(payload), "{\"sensor\":\"gy511\",\"interval_ms\":%u}", gy_valid[i]);
         json_command(payload);
-        assert(mqtt_manager_take_interval_update(&update) && update.sensor == SENSOR_GY511);
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_GY511);
         assert(update.interval_ms == gy_valid[i]);
     }
     rejected("{\"sensor\":\"gy511\",\"interval_ms\":499}", "integer from 500 to 10000");
@@ -335,11 +335,78 @@ int main(void)
     rejected("{\"sensor\":\"gy511\",\"interval_ms\":-1}", "integer from 500 to 10000");
     rejected("{\"sensor\":\"gy511\",\"interval_ms\":1e999}", "integer from 500 to 10000");
     rejected("{\"sensor\":\"gy511\",\"interval_ms\":\"1000\"}", "missing_or_invalid_interval_ms");
-    rejected("{\"sensor\":\"gy511\"}", "missing_or_invalid_interval_ms");
+    rejected("{\"sensor\":\"gy511\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"odd\\\"name\",\"interval_ms\":1000}", "unsupported_sensor");
     data = cJSON_Parse(last_payload);
     assert(data && !strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring, "odd\"name"));
     cJSON_Delete(data);
+
+    // Strict Boolean operations share the same parser, FIFO and QoS 1 ACK path.
+    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_GY511; ++sensor) {
+        for (int enabled = 0; enabled <= 1; ++enabled) {
+            char payload[100]; mqtt_config_update_t update;
+            const char *name = sensor == SENSOR_DHT22 ? "dht22" : "gy511";
+            snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"enabled\":%s}",
+                     name, enabled ? "true" : "false");
+            ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
+            json_command(payload);
+            assert(s_stats[TX_CONFIG_ACK].attempts == ack_attempts); // Not applied by the callback.
+            assert(mqtt_manager_take_config_update(&update));
+            assert(update.sensor == (sensor_id_t)sensor && update.operation == MQTT_CONFIG_ENABLED);
+            assert(update.enabled == (bool)enabled);
+            assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
+            snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"status\":\"applied\",\"enabled\":%s}",
+                     name, enabled ? "true" : "false");
+            assert(!strcmp(last_payload, payload) && last_qos == 1);
+            assert(mqtt_manager_reject_config(&update, "sensor_unavailable") == ESP_OK); pump();
+            data = cJSON_Parse(last_payload);
+            assert(cJSON_IsBool(cJSON_GetObjectItem(data, "enabled")));
+            assert(cJSON_IsTrue(cJSON_GetObjectItem(data, "enabled")) == enabled);
+            assert(!cJSON_GetObjectItem(data, "interval_ms"));
+            assert(!strcmp(cJSON_GetObjectItem(data, "reason")->valuestring, "sensor_unavailable"));
+            cJSON_Delete(data);
+        }
+    }
+    const char *bad_enabled[] = {"0", "1", "\"true\"", "null", "[]", "{}"};
+    for (unsigned i = 0; i < sizeof(bad_enabled) / sizeof(bad_enabled[0]); ++i) {
+        char payload[100];
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"gy511\",\"enabled\":%s}", bad_enabled[i]);
+        rejected(payload, "enabled must be a boolean");
+        assert(strstr(last_payload, "\"sensor\":\"gy511\""));
+    }
+    rejected("{\"enabled\":true}", "missing_or_invalid_sensor");
+    rejected("{\"sensor\":\"dht22\"}", "missing_configuration_operation");
+    rejected("{\"sensor\":\"future\",\"enabled\":false}", "unsupported_sensor");
+    assert(strstr(last_payload, "\"sensor\":\"future\"") && strstr(last_payload, "\"enabled\":false"));
+    rejected("{\"sensor\":\"gy511\",\"enabled\":false,\"interval_ms\":1000}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"dht22\",\"interval_ms\":2000,\"enabled\":null}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"gy511\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":1000,\"interval_ms\":500}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"gy511\",\"sensor\":\"dht22\",\"enabled\":false}", "missing_or_invalid_sensor");
+
+    const char *mixed_commands[] = {
+        "{\"sensor\":\"gy511\",\"enabled\":false}", "{\"sensor\":\"dht22\",\"interval_ms\":5000}",
+        "{\"sensor\":\"gy511\",\"enabled\":true}", "{\"sensor\":\"gy511\",\"interval_ms\":1000}"
+    };
+    for (unsigned i = 0; i < 4; ++i) json_command(mixed_commands[i]);
+    json_command("{\"sensor\":\"dht22\",\"enabled\":false}"); pump();
+    assert(strstr(last_payload, "queue_full") && strstr(last_payload, "\"sensor\":\"dht22\""));
+    assert(strstr(last_payload, "\"enabled\":false") && !strstr(last_payload, "interval_ms"));
+    for (unsigned i = 0; i < 4; ++i) {
+        mqtt_config_update_t update;
+        assert(mqtt_manager_take_config_update(&update));
+        assert(update.sensor == (i == 1 ? SENSOR_DHT22 : SENSOR_GY511));
+        assert(update.operation == (i % 2 ? MQTT_CONFIG_INTERVAL : MQTT_CONFIG_ENABLED));
+        if (i % 2) assert(update.interval_ms == (i == 1 ? 5000U : 1000U));
+        else assert(update.enabled == (i == 2));
+    }
+
+    // Enable/disable obeys the same retained policy.
+    valid_cmd = "{\"sensor\":\"gy511\",\"enabled\":false}";
+    len = strlen(valid_cmd); calls = enqueue_calls;
+    command(valid_cmd, len, len, 0, true); pump();
+    mqtt_config_update_t ignored;
+    assert(enqueue_calls == calls && !mqtt_manager_take_config_update(&ignored));
 
     // GY-511 obeys the existing retained/fragmented-input policy too.
     valid_cmd = "{\"sensor\":\"gy511\",\"interval_ms\":1000}";

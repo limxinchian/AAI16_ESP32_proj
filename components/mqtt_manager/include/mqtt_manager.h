@@ -6,10 +6,19 @@
 #include "esp_err.h"
 #include "sensor_status.h"
 
+typedef enum {
+    MQTT_CONFIG_INTERVAL,
+    MQTT_CONFIG_ENABLED,
+} mqtt_config_operation_t;
+
 typedef struct {
     sensor_id_t sensor;
-    uint32_t interval_ms;
-} mqtt_interval_update_t;
+    mqtt_config_operation_t operation;
+    union {
+        uint32_t interval_ms;
+        bool enabled;
+    };
+} mqtt_config_update_t;
 
 // Initialize once before any sensor tasks use this manager. Client retries
 // automatically if Wi-Fi/broker is unavailable; no wait for a connection.
@@ -28,15 +37,12 @@ esp_err_t mqtt_manager_publish_dht22(
     float humidity_pct
 );
 
-// Publish an ACK after applying a configuration.
-esp_err_t mqtt_manager_publish_config_ack(
-    sensor_id_t sensor,
-    uint32_t interval_ms
-);
+// Publish only after the acquisition owner commits the requested operation.
+esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update);
 
-// Reject a validated command, echoing its sensor and requested interval.
-esp_err_t mqtt_manager_reject_config(const mqtt_interval_update_t *update,
-                                      const char *reason);
+// Reject a validated command, echoing its sensor and requested operation/value.
+esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update,
+                                   const char *reason);
 
 
 esp_err_t mqtt_manager_publish_gy511(
@@ -52,8 +58,14 @@ esp_err_t mqtt_manager_publish_gy511(
 // One shared four-entry FIFO. Only app_main may peek/remove commands. Peeking
 // allows a busy reader's command to remain queued until its handoff succeeds.
 // Both calls are nonblocking; the MQTT callback only appends to this queue.
-bool mqtt_manager_peek_interval_update(mqtt_interval_update_t *out);
-bool mqtt_manager_take_interval_update(mqtt_interval_update_t *out);
+// Exactly one operation per command. Owners reject interval changes while
+// disabled with sensor_disabled; the previous interval is retained on resume.
+// Disable commits between reads and pauses acquisition, not hardware power.
+// Previously queued telemetry may still arrive afterward. Re-enable resets the
+// deadline by one retained period; an already enabled sensor keeps its deadline.
+// Both sensors start enabled with default intervals after each boot.
+bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
+bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
 
 // Call only from app_main. DIAGNOSTIC_PERIOD_MS in mqtt_manager.c defaults to
 // 60000; use 10000 for detailed testing. Connection/errors log immediately.

@@ -94,24 +94,24 @@ esp_err_t mqtt_manager_publish_gy511(float ax, float ay, float az, float mx, flo
 {
     assert(ax == 1 && mx == 10); gy_publications++; return ESP_OK;
 }
-bool mqtt_manager_peek_interval_update(mqtt_interval_update_t *update)
+bool mqtt_manager_peek_config_update(mqtt_config_update_t *update)
 {
     if (command_flood || (command_at_us >= 0 && test_now_us >= command_at_us && !commands_taken)) {
-        *update = (mqtt_interval_update_t){SENSOR_DHT22, 5000}; return true;
+        *update = (mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}; return true;
     }
     return false;
 }
-bool mqtt_manager_take_interval_update(mqtt_interval_update_t *update)
+bool mqtt_manager_take_config_update(mqtt_config_update_t *update)
 {
-    if (!mqtt_manager_peek_interval_update(update)) return false;
+    if (!mqtt_manager_peek_config_update(update)) return false;
     commands_taken++; return true;
 }
-esp_err_t mqtt_manager_publish_config_ack(sensor_id_t sensor, uint32_t interval)
+esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
-    assert(sensor == SENSOR_DHT22);
-    applied_acks++; ack_interval = interval; return ESP_OK;
+    assert(update->sensor == SENSOR_DHT22 && update->operation == MQTT_CONFIG_INTERVAL);
+    applied_acks++; ack_interval = update->interval_ms; return ESP_OK;
 }
-esp_err_t mqtt_manager_reject_config(const mqtt_interval_update_t *update, const char *reason)
+esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const char *reason)
 {
     assert(update->sensor == SENSOR_DHT22 && update->interval_ms == 5000);
     assert(!strcmp(reason, "sensor_unavailable"));

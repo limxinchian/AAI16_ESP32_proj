@@ -32,7 +32,7 @@ typedef struct {
     sensor_state_t state;
     bool initialized; // Remains true if initialization succeeded but task creation failed.
     sensor_error_stage_t error_stage;
-    esp_err_t last_error; // Current error; cleared by a successful read.
+    esp_err_t last_error; // Preserved across disable/enable; cleared by a successful read.
     uint32_t read_successes;
     uint32_t read_failures;
     uint32_t consecutive_failures; // Read failures only, not initialization failures.
@@ -47,6 +47,11 @@ void sensor_status_record_init(sensor_id_t id, esp_err_t error);
 void sensor_status_record_unavailable(sensor_id_t id, sensor_error_stage_t stage,
                                       esp_err_t error);
 void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us);
+// Call only from the acquisition owner, between reads. This records the gate;
+// the owner must stop sampling and reset its deadline on a disabled -> enabled
+// transition. Preserves all health history. Uninitialized/unavailable sensors
+// reject both operations; enabling never initializes hardware or repairs a task.
+esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled);
 bool sensor_status_can_sample(sensor_id_t id);
 bool sensor_status_get(sensor_id_t id, sensor_status_t *out);
 

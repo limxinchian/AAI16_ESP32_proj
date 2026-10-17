@@ -27,6 +27,24 @@
 
 static TaskHandle_t s_gy511_task;
 
+// One notification word carries exactly one command: validated intervals are
+// <= 10000; the high bit tags enable/disable and bit 0 holds its Boolean value.
+// Keeping both operations on index 0 preserves their application order.
+#define CONFIG_ENABLED_FLAG (UINT32_C(1) << 31)
+
+static bool config_can_apply(const mqtt_config_update_t *update, sensor_status_t *status)
+{
+    const char *reason = NULL;
+    if (!sensor_status_get(update->sensor, status) || !status->initialized ||
+        status->state == SENSOR_UNAVAILABLE || status->state == SENSOR_UNINITIALIZED) {
+        reason = "sensor_unavailable";
+    } else if (update->operation == MQTT_CONFIG_INTERVAL && status->state == SENSOR_DISABLED) {
+        reason = "sensor_disabled";
+    }
+    if (reason != NULL) (void)mqtt_manager_reject_config(update, reason);
+    return reason == NULL;
+}
+
 static void gy511_reader_task(void *arg)
 {
     (void)arg;
@@ -35,7 +53,7 @@ static void gy511_reader_task(void *arg)
     TickType_t last_sample = next_due;
     uint32_t active_interval_ms = GY511_SAMPLE_MS;
     TickType_t period = pdMS_TO_TICKS(GY511_SAMPLE_MS);
-    uint32_t requested_ms = 0;
+    uint32_t control = 0;
     bool pending_update = false;
     int64_t next_log_us = 0;
     uint32_t reads = 0, ok = 0, overruns = 0;
@@ -43,29 +61,61 @@ static void gy511_reader_task(void *arg)
     esp_err_t last_status = ESP_OK;
 
     while (1) {
-        // Notification index 0 belongs exclusively to interval configuration.
+        // Notification index 0 belongs exclusively to sensor configuration.
         // Bound work under a command flood; only this task commits its schedule.
         for (unsigned commands = 0; commands < 4; ++commands) {
             if (!pending_update &&
-                xTaskNotifyWait(0, UINT32_MAX, &requested_ms, 0) != pdTRUE) break;
+                xTaskNotifyWait(0, UINT32_MAX, &control, 0) != pdTRUE) break;
             pending_update = false;
-            active_interval_ms = requested_ms;
-            // Round up to the RTOS tick (10 ms in this project).
-            period = pdMS_TO_TICKS(active_interval_ms + portTICK_PERIOD_MS - 1);
-            // Repeated commands cannot postpone acquisition indefinitely.
-            next_due = last_sample + period;
-            TickType_t now = xTaskGetTickCount();
-            if ((int32_t)(next_due - now) < 0) next_due = now;
-            printf("\n[CONFIG] GY511 interval applied: %lu ms\n",
-                   (unsigned long)active_interval_ms);
-            (void)mqtt_manager_publish_config_ack(SENSOR_GY511, active_interval_ms);
+            mqtt_config_update_t update = {.sensor = SENSOR_GY511};
+            if (control & CONFIG_ENABLED_FLAG) {
+                update.operation = MQTT_CONFIG_ENABLED;
+                update.enabled = (control & 1) != 0;
+            } else {
+                update.operation = MQTT_CONFIG_INTERVAL;
+                update.interval_ms = control;
+            }
+            // Validate availability/disabled policy HERE, after all older
+            // commands have committed, not against a dispatcher snapshot.
+            sensor_status_t status;
+            if (!config_can_apply(&update, &status)) continue;
+            if (update.operation == MQTT_CONFIG_ENABLED) {
+                if (sensor_status_set_enabled(SENSOR_GY511, update.enabled) != ESP_OK) {
+                    (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
+                    continue;
+                }
+                if (update.enabled && status.state == SENSOR_DISABLED) {
+                    // Fresh anchor: no catch-up reads, and repeated enables do
+                    // not keep moving the deadline. Retain the configured period.
+                    last_sample = xTaskGetTickCount();
+                    next_due = last_sample + period;
+                }
+                printf("\n[CONFIG] GY511 enabled applied: %s\n", update.enabled ? "true" : "false");
+            } else {
+                active_interval_ms = update.interval_ms;
+                // Round up to the RTOS tick (10 ms in this project).
+                period = pdMS_TO_TICKS(active_interval_ms + portTICK_PERIOD_MS - 1);
+                // Repeated commands cannot postpone acquisition indefinitely.
+                next_due = last_sample + period;
+                TickType_t now = xTaskGetTickCount();
+                if ((int32_t)(next_due - now) < 0) next_due = now;
+                printf("\n[CONFIG] GY511 interval applied: %lu ms\n",
+                       (unsigned long)active_interval_ms);
+            }
+            (void)mqtt_manager_publish_config_ack(&update);
+        }
+
+        if (!sensor_status_can_sample(SENSOR_GY511)) {
+            // Pausing keeps the reader alive and wakeable by either operation.
+            pending_update = xTaskNotifyWait(0, UINT32_MAX, &control, portMAX_DELAY) == pdTRUE;
+            continue;
         }
 
         TickType_t now = xTaskGetTickCount();
         int32_t remaining = (int32_t)(next_due - now);
         if (remaining > 0) {
             // A notification wakes the reader without waiting for the old period.
-            pending_update = xTaskNotifyWait(0, UINT32_MAX, &requested_ms,
+            pending_update = xTaskNotifyWait(0, UINT32_MAX, &control,
                                              (TickType_t)remaining) == pdTRUE;
             continue;
         }
@@ -221,41 +271,53 @@ void app_main(void)
 
     while (1)
     {
-        bool dht22_available = sensor_status_can_sample(SENSOR_DHT22);
-
         // Check for validated MQTT configuration updates.
-        mqtt_interval_update_t update;
+        mqtt_config_update_t update;
 
         // Bound work even if the broker continuously sends commands.
         for (unsigned commands = 0; commands < 4 &&
-             mqtt_manager_peek_interval_update(&update); ++commands)
+             mqtt_manager_peek_config_update(&update); ++commands)
         {
-            if (!sensor_status_can_sample(update.sensor)) {
-                // Consume commands, but never claim an inactive sensor applied them.
-                // Queue failures remain visible in the existing MQTT diagnostics.
-                mqtt_manager_take_interval_update(&update);
-                (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
-                continue;
-            }
-
             if (update.sensor == SENSOR_GY511) {
+                if (s_gy511_task == NULL) {
+                    mqtt_manager_take_config_update(&update);
+                    (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
+                    continue;
+                }
                 // No overwrite: keep the FIFO head pending if the reader still
                 // has a notification. No ACK until that reader commits it.
-                if (xTaskNotify(s_gy511_task, update.interval_ms,
+                uint32_t control = update.operation == MQTT_CONFIG_ENABLED ?
+                    CONFIG_ENABLED_FLAG | (uint32_t)update.enabled : update.interval_ms;
+                if (xTaskNotify(s_gy511_task, control,
                                 eSetValueWithoutOverwrite) != pdPASS) break;
-                mqtt_manager_take_interval_update(&update);
+                mqtt_manager_take_config_update(&update);
                 continue;
             }
 
-            mqtt_manager_take_interval_update(&update);
+            mqtt_manager_take_config_update(&update);
             if (update.sensor != SENSOR_DHT22) {
                 (void)mqtt_manager_reject_config(&update, "unsupported_sensor");
                 continue;
             }
-            uint32_t requested_ms = update.interval_ms;
+            sensor_status_t status;
+            if (!config_can_apply(&update, &status)) continue;
+            if (update.operation == MQTT_CONFIG_ENABLED) {
+                if (sensor_status_set_enabled(SENSOR_DHT22, update.enabled) != ESP_OK) {
+                    (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
+                    continue;
+                }
+                if (update.enabled && status.state == SENSOR_DISABLED) {
+                    last_sample_start_us = esp_timer_get_time();
+                    next_due_us = last_sample_start_us + (int64_t)active_interval_ms * 1000LL;
+                    previous_start_us = -1; // Exclude the deliberate pause from jitter.
+                }
+                printf("\n[CONFIG] DHT22 enabled applied: %s\n", update.enabled ? "true" : "false");
+                (void)mqtt_manager_publish_config_ack(&update);
+                continue;
+            }
 
             // Apply the new sampling interval.
-            active_interval_ms = requested_ms;
+            active_interval_ms = update.interval_ms;
 
             // Anchor to acquisition, so repeated commands cannot keep pushing
             // the next read into the future. Never sample faster than 2000 ms.
@@ -270,8 +332,7 @@ void app_main(void)
 
             // Send application-level ACK over MQTT.
             esp_err_t ack_err =
-                mqtt_manager_publish_config_ack(
-                    SENSOR_DHT22, active_interval_ms);
+                mqtt_manager_publish_config_ack(&update);
 
             if (ack_err != ESP_OK)
             {
@@ -280,7 +341,7 @@ void app_main(void)
             }
         }
 
-        if (!dht22_available) {
+        if (!sensor_status_can_sample(SENSOR_DHT22)) {
             mqtt_manager_log_diagnostics();
             sensor_status_log_summary();
             vTaskDelay(pdMS_TO_TICKS(100));

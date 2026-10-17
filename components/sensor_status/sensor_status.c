@@ -91,6 +91,23 @@ void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t complete
     portEXIT_CRITICAL(&s_lock);
 }
 
+esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled)
+{
+    if (!valid_id(id)) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_lock);
+    sensor_status_t *status = &s_sensors[id];
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (status->initialized && (can_sample(status) || status->state == SENSOR_DISABLED)) {
+        // Disabling is an intentional pause, not a successful read. In
+        // particular, re-enabling must not erase a previous read failure.
+        status->state = !enabled ? SENSOR_DISABLED :
+            (status->error_stage == SENSOR_STAGE_READ ? SENSOR_DEGRADED : SENSOR_READY);
+        result = ESP_OK;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return result;
+}
+
 bool sensor_status_can_sample(sensor_id_t id)
 {
     if (!valid_id(id)) return false;
