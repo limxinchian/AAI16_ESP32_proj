@@ -9,6 +9,7 @@
 #include "gy511_sensor.h"
 #include "sensor_status.h"
 #include "rc522_reader.h"
+#include "ld2450_reader.h"
 #include "sensor_config.h"
 
 #include "esp_err.h"
@@ -237,6 +238,7 @@ void app_main(void)
     }
 
     rc522_reader_start();
+    ld2450_reader_start();
 
     vTaskDelay(pdMS_TO_TICKS(2000));
 

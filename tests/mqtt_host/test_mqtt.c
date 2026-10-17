@@ -406,6 +406,8 @@ int main(void)
     rejected("{}", "missing_or_invalid_sensor");
     rejected("{\"sensor\":\"future\",\"interval_ms\":5000}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\""));
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":5000}", "unsupported_sensor");
+    assert(strstr(last_payload, "\"sensor\":\"ld2450\""));
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":\"5000\"}", "missing_or_invalid_interval_ms");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":1999}", "integer from 2000 to 10000");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":10001}", "integer from 2000 to 10000");
@@ -520,6 +522,8 @@ int main(void)
     rejected("{\"sensor\":\"dht22\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"future\",\"enabled\":false}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\"") && strstr(last_payload, "\"enabled\":false"));
+    rejected("{\"sensor\":\"ld2450\",\"enabled\":false}", "unsupported_sensor");
+    assert(strstr(last_payload, "\"sensor\":\"ld2450\"") && strstr(last_payload, "\"enabled\":false"));
     // RC522 uses the same parser, FIFO and ACK serializer, with its own limits.
     const unsigned rc_valid[] = {200, 201, 500, 1000, 2000};
     for (unsigned i = 0; i < sizeof(rc_valid) / sizeof(rc_valid[0]); ++i) {

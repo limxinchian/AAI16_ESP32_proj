@@ -70,6 +70,11 @@ void rc522_reader_start(void)
     sensor_status_record_init(SENSOR_RC522, ESP_FAIL);
 }
 TaskHandle_t rc522_reader_task_handle(void) { return NULL; }
+void ld2450_reader_start(void)
+{
+    sensor_status_configure(SENSOR_LD2450, "ld2450", true);
+    sensor_status_record_init(SENSOR_LD2450, ESP_FAIL);
+}
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }
@@ -189,7 +194,7 @@ int main(int argc, char **argv)
             assert(!dht_reads && !dht_publications && !applied_acks && !applied_logs);
             assert(dht.state == SENSOR_UNAVAILABLE && dht.error_stage == SENSOR_STAGE_INIT);
             assert(!dht.initialized && !dht.read_failures && dht.last_success_us == -1);
-            assert(diagnostics_calls == 1230 && test_log_calls == 9);
+            assert(diagnostics_calls == 1230 && test_log_calls == 12);
             assert(commands_taken == (command_flood ? 4 * diagnostics_calls : 1));
             assert(rejected_acks == commands_taken);
         } else {

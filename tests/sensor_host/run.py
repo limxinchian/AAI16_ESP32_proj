@@ -29,7 +29,7 @@ for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "freertos/FreeRTOS.h",
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output)]
 for component in ["sensor_status", "dht22_moisture_sensor", "gy511_sensor",
-                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager"]:
+                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager", "ld2450_sensor"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
@@ -37,7 +37,7 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
     if name != "test_gy511":
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     threading_flags = ["-pthread"] if name == "test_runtime" else []
-    subprocess.run(flags + threading_flags + sources + ["-o", str(binary)], check=True)
+    subprocess.run(flags + threading_flags + sources + ["-lm", "-o", str(binary)], check=True)
     scenarios = (["healthy", "dht_init", "gy_init", "both_init", "bus_init", "gy_task",
                   "dht_reads", "gy_reads", "gy_overrun", "healthy_config", "healthy_flood",
                   "unavailable_flood"] if name == "test_app" else [None])
@@ -51,6 +51,7 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
                      "rc_gates", "rc_remove", "rc_different", "rc_partial_idle", "rc_paused",
                      "rc_burst", "rc_preempt", "rc_flood", "rc_during_read", "rc_degraded",
                      "rc_unavailable", "rc_task_failure", "rc_bus_failure", "rc_uninitialized",
-                     "rc_all_config", "rc_wrap"]
+                     "rc_all_config", "rc_wrap", "radar_healthy", "radar_missing", "radar_errors",
+                     "radar_init", "radar_task"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

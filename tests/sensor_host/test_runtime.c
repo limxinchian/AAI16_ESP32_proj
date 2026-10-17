@@ -1,4 +1,4 @@
-// Three real application loops with deterministic, cooperative host scheduling.
+// Four real application loops with deterministic, cooperative host scheduling.
 // pthreads provide separate C stacks; only one simulated task runs at a time.
 // This tests dispatch interleavings, not ESP32 SMP timing or the MQTT transport.
 #include "platform.h"
@@ -11,6 +11,7 @@ static int quiet_printf(const char *format, ...) { return 0; }
 #define printf quiet_printf
 #include "../../main/main.c"
 #include "../../main/rc522_reader.c"
+#include "../../main/ld2450_reader.c"
 #undef printf
 
 typedef struct {
@@ -20,7 +21,7 @@ typedef struct {
     int64_t wake_us;
     void (*entry)(void *);
 } sim_task_t;
-static sim_task_t tasks[3]; // app_main, GY-511 reader, RC522 reader
+static sim_task_t tasks[4]; // app_main, GY-511, RC522, LD2450 readers
 static pthread_mutex_t scheduler_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t scheduler_changed = PTHREAD_COND_INITIALIZER;
 static bool stopping;
@@ -32,6 +33,8 @@ static bool rc_active, rc_missing, rc_task_failure, rc_slow_init, rc_slow_read, 
 static unsigned rc_inits, rc_count, rc_tx;
 static int64_t rc_times[256], rc_event_times[16];
 static const char *rc_scenario;
+static bool radar_active, radar_missing, radar_errors, radar_init_failure, radar_task_failure;
+static unsigned radar_inits, radar_receives, radar_valid, radar_deinits;
 static unsigned diagnostics_paused, dht_inits, gy_inits;
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
 static int64_t dht_times[64], gy_times[64];
@@ -54,7 +57,7 @@ static unsigned ack_count;
 
 static int task_index(void)
 {
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         if (tasks[i].exists && pthread_equal(tasks[i].thread, pthread_self())) return i;
     }
     assert(false); return -1;
@@ -108,24 +111,26 @@ unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { return 1024; }
 BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
                       void *arg, unsigned priority, TaskHandle_t *handle)
 {
-    assert(task_index() == 0 && stack == 4096 && handle);
-    int index = !strcmp(name, "gy511_reader") ? 1 : 2;
-    assert(index == 1 ? priority == 4 : (!strcmp(name, "rc522_reader") && priority == 3));
-    if (index == 1 ? task_failure : rc_task_failure) return pdFALSE;
+    assert(task_index() == 0 && stack == 4096);
+    int index = !strcmp(name, "gy511_reader") ? 1 : !strcmp(name, "rc522_reader") ? 2 : 3;
+    assert(index == 1 ? priority == 4 : priority == 3);
+    assert(index == 3 ? (!strcmp(name, "ld2450_reader") && !handle) : handle != NULL);
+    if (index == 1 ? task_failure : index == 2 ? rc_task_failure : (!radar_active || radar_task_failure)) return pdFALSE;
     pthread_mutex_lock(&scheduler_lock);
     tasks[index].exists = true;
     tasks[index].entry = entry;
     tasks[index].wake_us = test_now_us;
-    *handle = &tasks[index];
+    if (handle) *handle = &tasks[index];
     assert(pthread_create(&tasks[index].thread, NULL, task_entry, &tasks[index]) == 0);
     pthread_mutex_unlock(&scheduler_lock);
     return pdPASS;
 }
 void vTaskDelete(TaskHandle_t task)
 {
-    assert(!task && task_index() == 2);
+    assert(!task && (task_index() == 2 || task_index() == 3));
     pthread_mutex_lock(&scheduler_lock);
-    tasks[2].finished = true; tasks[2].running = false; running = -1;
+    int index = task_index();
+    tasks[index].finished = true; tasks[index].running = false; running = -1;
     pthread_cond_broadcast(&scheduler_changed);
     pthread_mutex_unlock(&scheduler_lock);
     pthread_exit(NULL);
@@ -157,6 +162,21 @@ BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
 }
 
 esp_err_t wifi_manager_start(void) { return ESP_OK; }
+esp_err_t ld2450_sensor_init(void)
+{ radar_inits++; return radar_init_failure ? ESP_ERR_NO_MEM : ESP_OK; }
+esp_err_t ld2450_sensor_deinit(void) { radar_deinits++; return ESP_OK; }
+esp_err_t ld2450_sensor_receive(ld2450_report_t *report, unsigned *frames)
+{
+    assert(task_index() == 3); radar_receives++;
+    vTaskDelay(pdMS_TO_TICKS(100)); // Real application services configuration while UART blocks.
+    *frames = 0;
+    if (radar_missing) return ESP_OK;
+    if (radar_errors && radar_valid) return ESP_FAIL;
+    *report = (ld2450_report_t){0}; // No-target reports still prove communication.
+    *frames = 1; radar_valid++; return ESP_OK;
+}
+void ld2450_sensor_get_diagnostics(ld2450_diagnostics_t *d)
+{ *d = (ld2450_diagnostics_t){.frames = radar_valid}; }
 esp_err_t spi_bus_manager_init(void) { return rc_active ? ESP_OK : ESP_FAIL; }
 esp_err_t rc522_sensor_init(void)
 {
@@ -318,7 +338,7 @@ static void simulate(void)
     while (true) {
         while (running >= 0) pthread_cond_wait(&scheduler_changed, &scheduler_lock);
         int64_t next_us = base_us + end_us;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 4; ++i) {
             if (tasks[i].exists && !tasks[i].finished && tasks[i].wake_us < next_us) next_us = tasks[i].wake_us;
         }
         if (next_input < input_count && base_us + inputs[next_input].at_us < next_us) {
@@ -330,8 +350,8 @@ static void simulate(void)
             assert(queued < 4); // Queue-full validation is covered by the actual MQTT tests.
             queue[queued++] = inputs[next_input++].update;
         }
-        const int priority_order[] = {1, 2, 0};
-        for (unsigned p = 0; p < 3; ++p) {
+        const int priority_order[] = {1, 2, 3, 0};
+        for (unsigned p = 0; p < 4; ++p) {
             int i = priority_order[p];
             if (tasks[i].exists && !tasks[i].finished && tasks[i].wake_us <= test_now_us) {
                 tasks[i].running = true; running = i;
@@ -343,7 +363,7 @@ static void simulate(void)
     stopping = true;
     pthread_cond_broadcast(&scheduler_changed);
     pthread_mutex_unlock(&scheduler_lock);
-    for (int i = 0; i < 3; ++i) if (tasks[i].exists) pthread_join(tasks[i].thread, NULL);
+    for (int i = 0; i < 4; ++i) if (tasks[i].exists) pthread_join(tasks[i].thread, NULL);
 }
 
 static void test_gates(const char *scenario)
@@ -631,10 +651,50 @@ static void test_rc522_config(const char *scenario)
     printf("PASS: RC522 runtime configuration scenario %s\n", scenario);
 }
 
+static void test_radar(const char *scenario)
+{
+    radar_active = rc_active = true;
+    rc_scenario = "rc_default";
+    radar_missing = !strcmp(scenario, "radar_missing");
+    radar_errors = !strcmp(scenario, "radar_errors");
+    radar_init_failure = !strcmp(scenario, "radar_init");
+    radar_task_failure = !strcmp(scenario, "radar_task");
+    input(2350000, SENSOR_DHT22, 5000);
+    input(2350000, SENSOR_GY511, 1000);
+    input(2350000, SENSOR_RC522, 500);
+    simulate();
+    verify_commands();
+    assert(dht_count == 2 && dht_times[0] == 2000000 && dht_times[1] == 7000000);
+    assert(gy_count == 11 && rc_count == 24 && rc_tx == 1);
+    for (unsigned i = 0; i < gy_count; ++i) {
+        assert(gy_times[i] == (i < 5 ? 100000 + i * 500000LL : 3100000 + (i - 5) * 1000000LL));
+    }
+    for (unsigned i = 0; i < rc_count; ++i) {
+        assert(rc_times[i] == (i < 13 ? i * 200000LL : 2900000 + (i - 13) * 500000LL));
+    }
+    // All three settings commit inside the radar's 2.31..2.41s receive wait.
+    for (unsigned i = 0; i < ack_count; ++i) assert(acks[i].at_us == 2400000 && acks[i].applied);
+    assert(diagnostics == dht_count && radar_inits == (radar_task_failure ? 0U : 1U));
+    sensor_status_t s;
+    assert(sensor_status_get(SENSOR_LD2450, &s));
+    if (radar_task_failure || radar_init_failure || radar_missing) {
+        assert(s.state == SENSOR_UNAVAILABLE && !s.initialized && !radar_valid);
+        assert(s.error_stage == (radar_task_failure ? SENSOR_STAGE_TASK : SENSOR_STAGE_INIT));
+        assert(radar_deinits == (radar_missing ? 1U : 0U));
+    } else if (radar_errors) {
+        assert(s.state == SENSOR_DEGRADED && s.read_successes == 1 && s.read_failures > 50);
+    } else assert(s.state == SENSOR_READY && s.read_successes > 70 && !s.read_failures);
+    for (sensor_id_t id = SENSOR_DHT22; id <= SENSOR_RC522; ++id) {
+        assert(sensor_status_get(id, &s) && s.state == SENSOR_READY && !s.read_failures);
+    }
+    printf("PASS: LD2450 four-sensor isolation scenario %s\n", scenario);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
     const char *scenario = argv[1];
+    if (!strncmp(scenario, "radar_", 6)) { test_radar(scenario); return 0; }
     if (!strncmp(scenario, "rc_", 3)) { test_rc522_config(scenario); return 0; }
     if (!strncmp(scenario, "gate_", 5)) { test_gates(scenario); return 0; }
     bool changes = !strcmp(scenario, "changes") || !strcmp(scenario, "mixed") ||
