@@ -8,6 +8,7 @@
 typedef enum {
     SENSOR_DHT22,
     SENSOR_GY511,
+    SENSOR_RC522,
     SENSOR_STATUS_CAPACITY = 8
 } sensor_id_t;
 

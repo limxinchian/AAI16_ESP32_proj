@@ -8,6 +8,7 @@
 #include "i2c_bus_manager.h"
 #include "gy511_sensor.h"
 #include "sensor_status.h"
+#include "rc522_reader.h"
 
 #include "esp_err.h"
 #include "esp_timer.h"
@@ -251,6 +252,8 @@ void app_main(void)
     {
         sensor_status_record_unavailable(SENSOR_GY511, SENSOR_STAGE_DEPENDENCY, i2c_err);
     }
+
+    rc522_reader_start();
 
     vTaskDelay(pdMS_TO_TICKS(2000));
 

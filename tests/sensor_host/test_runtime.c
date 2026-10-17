@@ -139,6 +139,11 @@ BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
 }
 
 esp_err_t wifi_manager_start(void) { return ESP_OK; }
+void rc522_reader_start(void)
+{
+    sensor_status_configure(SENSOR_RC522, "rc522", true);
+    sensor_status_record_init(SENSOR_RC522, ESP_FAIL);
+}
 esp_err_t mqtt_manager_init(void) { return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { return ESP_OK; }
 void i2c_bus_manager_scan(void) {}
@@ -236,6 +241,8 @@ static void gate_input(int64_t at_us, sensor_id_t sensor, bool enabled)
 
 static void verify_commands(void)
 {
+    sensor_status_t rc522;
+    assert(sensor_status_get(SENSOR_RC522, &rc522) && rc522.state == SENSOR_UNAVAILABLE);
     assert(!queued && taken == input_count && ack_count == input_count);
     assert(dht_inits == 1 && gy_inits == 1); // Enable never reinitializes either driver.
     assert(dht_tx == dht_count && gy_tx == gy_count - (gy_read_error ? 1U : 0U) && diagnostics > 0);

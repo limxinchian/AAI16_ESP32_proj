@@ -63,6 +63,12 @@ BaseType_t xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
     return pdPASS;
 }
 esp_err_t wifi_manager_start(void) { wifi_starts++; return ESP_OK; }
+// Exercise the real app_main with RC522 unavailable (for example, not wired).
+void rc522_reader_start(void)
+{
+    sensor_status_configure(SENSOR_RC522, "rc522", true);
+    sensor_status_record_init(SENSOR_RC522, ESP_FAIL);
+}
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }
@@ -164,6 +170,8 @@ int main(int argc, char **argv)
         }
     } else {
         assert(wifi_starts == 1 && mqtt_starts == 1 && bus_starts == 1 && dht_inits == 1);
+        sensor_status_t rc522;
+        assert(sensor_status_get(SENSOR_RC522, &rc522) && rc522.state == SENSOR_UNAVAILABLE);
         assert(sensor_status_get(SENSOR_DHT22, &dht));
         assert(gy_inits == (bus_init_error == ESP_OK ? 1U : 0U));
         assert(scans == gy_inits);
@@ -180,7 +188,7 @@ int main(int argc, char **argv)
             assert(!dht_reads && !dht_publications && !applied_acks && !applied_logs);
             assert(dht.state == SENSOR_UNAVAILABLE && dht.error_stage == SENSOR_STAGE_INIT);
             assert(!dht.initialized && !dht.read_failures && dht.last_success_us == -1);
-            assert(diagnostics_calls == 1230 && test_log_calls == 6);
+            assert(diagnostics_calls == 1230 && test_log_calls == 9);
             assert(commands_taken == (command_flood ? 4 * diagnostics_calls : 1));
             assert(rejected_acks == commands_taken);
         } else {

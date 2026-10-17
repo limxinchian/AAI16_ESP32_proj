@@ -378,6 +378,9 @@ int main(void)
     rejected("{\"sensor\":\"dht22\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"future\",\"enabled\":false}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\"") && strstr(last_payload, "\"enabled\":false"));
+    // RC522 Phase 1 deliberately has no MQTT configuration route.
+    rejected("{\"sensor\":\"rc522\",\"enabled\":false}", "unsupported_sensor");
+    rejected("{\"sensor\":\"rc522\",\"interval_ms\":1000}", "unsupported_sensor");
     rejected("{\"sensor\":\"gy511\",\"enabled\":false,\"interval_ms\":1000}", "ambiguous_configuration");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":2000,\"enabled\":null}", "ambiguous_configuration");
     rejected("{\"sensor\":\"gy511\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
