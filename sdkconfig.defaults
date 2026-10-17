@@ -1,0 +1,2 @@
+# Report expired outbox entries; QoS 0 still has no broker acknowledgement.
+CONFIG_MQTT_REPORT_DELETED_MESSAGES=y
