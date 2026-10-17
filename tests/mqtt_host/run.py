@@ -42,6 +42,7 @@ subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unuse
                 "-I", str(test), "-I", str(output),
                 "-I", str(repo / "components/mqtt_manager/include"), "-I", str(cjson),
                 "-I", str(repo / "components/sensor_status/include"),
+                "-I", str(repo / "components/ld2450_sensor/include"),
                 str(test / "test_mqtt.c"), str(cjson / "cJSON.c"), "-lm", "-o", str(binary)], check=True)
 subprocess.run([str(binary)], check=True)
 

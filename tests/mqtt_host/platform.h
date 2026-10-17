@@ -22,8 +22,10 @@ typedef int esp_err_t;
 #define pdMS_TO_TICKS(ms) (ms)
 typedef int portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED 0
-#define portENTER_CRITICAL(lock) ((void)(lock))
-#define portEXIT_CRITICAL(lock) ((void)(lock))
+void test_enter_critical(void);
+void test_exit_critical(void);
+#define portENTER_CRITICAL(lock) ((void)(lock), test_enter_critical())
+#define portEXIT_CRITICAL(lock) ((void)(lock), test_exit_critical())
 // Keep format arguments compiled, without printing noisy test diagnostics.
 #define ESP_LOGI(tag, ...) do { (void)(tag); if (0) printf(__VA_ARGS__); } while (0)
 #define ESP_LOGW ESP_LOGI

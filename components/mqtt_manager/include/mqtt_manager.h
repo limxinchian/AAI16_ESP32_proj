@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "sensor_status.h"
+#include "ld2450_sensor.h"
 
 typedef enum {
     MQTT_CONFIG_INTERVAL,
@@ -47,6 +48,18 @@ esp_err_t mqtt_manager_publish_dht22(
 // default after enqueue. ESP_OK means local acceptance, not broker delivery.
 // SDK retries can deliver duplicates: deduplicate by (sensor, boot_id, seq).
 esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_length);
+
+// Call only for a validated radar report, with its acquisition timestamp.
+// Copies one latest snapshot under a short spinlock; no queue wait or SDK call.
+// New reports replace pending ones, including offline. The existing publisher
+// samples this mailbox at most once/second, at QoS 0, retain=0. Reports aged
+// >=2 s are dropped, and a consumed report is never resent without an update.
+// seq counts publication attempts (including offline/stale drops), not frames;
+// uptime_ms is acquisition time. Pending ACK/telemetry queue work takes priority.
+// ESP_OK means snapshot acceptance only; delivery failures never affect UART
+// sensor status. This path uses neither the shared TX queue nor the QoS 1 outbox.
+esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
+                                             int64_t received_us);
 
 // Publish only after the acquisition owner commits the requested operation.
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update);

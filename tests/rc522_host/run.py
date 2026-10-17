@@ -22,7 +22,7 @@ for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "freertos/FreeRTOS.h",
     header.write_text('#include "platform.h"\n')
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output), "-I", str(repo / "main")]
-for component in ["spi_bus_manager", "rc522_sensor", "sensor_status", "mqtt_manager"]:
+for component in ["spi_bus_manager", "rc522_sensor", "sensor_status", "mqtt_manager", "ld2450_sensor"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_spi", "test_rc522", "test_reader"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))

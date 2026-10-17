@@ -17,7 +17,11 @@ static int outbox_queries;
 static int64_t outbox_query_delay_us;
 static int fail_step, step;
 static int last_qos;
-static char last_payload[TX_PAYLOAD_SIZE], last_topic[64];
+static char last_payload[LD2450_PAYLOAD_SIZE], last_topic[64];
+static unsigned critical_depth;
+static void (*publish_hook)(void);
+void test_enter_critical(void) { assert(!critical_depth); critical_depth++; }
+void test_exit_critical(void) { assert(critical_depth == 1); critical_depth--; }
 static bool failure(void) { return ++step == fail_step; }
 
 QueueHandle_t xQueueCreate(unsigned capacity, unsigned size)
@@ -33,13 +37,14 @@ QueueHandle_t xQueueCreate(unsigned capacity, unsigned size)
 }
 int xQueueSend(QueueHandle_t q, const void *item, unsigned wait)
 {
-    assert(wait == 0);
+    assert(wait == 0 && !critical_depth);
     if (q->count == q->capacity) return 0;
     memcpy(q->items + q->count++ * q->size, item, q->size);
     return pdTRUE;
 }
 int xQueueReceive(QueueHandle_t q, void *item, unsigned wait)
 {
+    assert(!critical_depth);
     if (!q->count) {
         if (wait != 0) {
             if (returned_idle) longjmp(worker_idle, 1);
@@ -93,7 +98,7 @@ int esp_mqtt_client_subscribe(esp_mqtt_client_handle_t c, const char *t, int q)
 int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t c, const char *t,
                            const char *d, int len, int qos, int retain, bool store)
 {
-    assert(qos == 1 && store && !retain && len > 0 && len < TX_PAYLOAD_SIZE);
+    assert(!critical_depth && qos == 1 && store && !retain && len > 0 && len < TX_PAYLOAD_SIZE);
     enqueue_calls++;
     memcpy(last_payload, d, len); last_payload[len] = 0;
     snprintf(last_topic, sizeof(last_topic), "%s", t);
@@ -106,12 +111,14 @@ int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t c, const char *t,
 int esp_mqtt_client_publish(esp_mqtt_client_handle_t c, const char *t,
                            const char *d, int len, int qos, int retain)
 {
-    assert(qos == 0 && !retain && len > 0 && len < TX_PAYLOAD_SIZE);
+    assert(!critical_depth && qos == 0 && !retain && len > 0 && len < (int)sizeof(last_payload));
+    assert(!strcmp(t, LD2450_DATA_TOPIC) || len < TX_PAYLOAD_SIZE);
     publish_calls++;
     memcpy(last_payload, d, len); last_payload[len] = 0;
     snprintf(last_topic, sizeof(last_topic), "%s", t);
     last_qos = qos;
     clock_us += 20000;
+    if (publish_hook) publish_hook();
     if (disconnect_during_publish) {
         mqtt_event_handler(NULL, NULL, MQTT_EVENT_DISCONNECTED, NULL);
         return -1;
@@ -120,6 +127,7 @@ int esp_mqtt_client_publish(esp_mqtt_client_handle_t c, const char *t,
 }
 int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t c)
 {
+    assert(!critical_depth);
     outbox_queries++; clock_us += outbox_query_delay_us;
     if (ack_during_query) {
         ack_during_query = false;
@@ -127,7 +135,7 @@ int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t c)
     }
     return outbox_size;
 }
-int64_t esp_timer_get_time(void) { return clock_us; }
+int64_t esp_timer_get_time(void) { assert(!critical_depth); return clock_us; }
 uint32_t esp_random(void) { return 0x12345678; }
 uint32_t esp_get_free_heap_size(void) { return 100000; }
 uint32_t esp_get_minimum_free_heap_size(void) { return 90000; }
@@ -282,6 +290,8 @@ static void test_rfid_events(void)
            stats->offline + stats->stale + stats->enqueue_failed);
     puts("PASS: RFID JSON/UID4/7/10, offline FIFO, expiry, drop accounting, ACK reserve/priority, QoS1 handoff");
 }
+
+#include "test_radar.c"
 
 int main(void)
 {
@@ -613,6 +623,7 @@ int main(void)
     assert(enqueue_calls == calls && !mqtt_manager_take_config_update(&disable));
     command(valid_cmd, len - 1, len, 0, false); pump();
     assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
+    test_radar_telemetry();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +

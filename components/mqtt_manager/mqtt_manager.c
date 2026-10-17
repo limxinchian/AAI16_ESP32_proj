@@ -30,12 +30,18 @@
 #define DHT22_DATA_TOPIC "aai16/sensors/dht22/data"
 #define GY511_DATA_TOPIC "aai16/sensors/gy511/data"
 #define RC522_EVENT_TOPIC "aai16/sensors/rc522/event"
+#define LD2450_DATA_TOPIC "aai16/sensors/ld2450/data"
 
 #define CONFIG_QUEUE_SIZE 4
 #define MQTT_CONNECTED_BIT BIT0
 #define TX_QUEUE_SIZE 8
 #define TX_PAYLOAD_SIZE 320
 #define TELEMETRY_MAX_AGE_MS 2000
+// Three targets need more than the shared 320-byte queue payload. Keep that
+// queue unchanged: serialize a single radar mailbox only in the publisher.
+#define LD2450_PAYLOAD_SIZE 512
+#define LD2450_PUBLISH_PERIOD_US 1000000LL
+#define LD2450_MAX_AGE_US 2000000LL
 // Keep the original 4096-byte allowance available to configuration ACKs/control
 // traffic. Events may occupy at most an additional 1024 serialized bytes.
 #define ACK_OUTBOX_RESERVE_BYTES 4096
@@ -97,6 +103,7 @@ typedef enum {
     TX_GY511,
     TX_CONFIG_ACK,
     TX_RC522_EVENT,
+    TX_LD2450,
     TX_KIND_COUNT
 } tx_kind_t;
 
@@ -131,6 +138,17 @@ static uint32_t s_event_offline_buffered, s_event_outbox_waits;
 static int s_outbox_peak, s_outbox_bytes;
 static int64_t s_outbox_observed_ms, s_max_outbox_query_us;
 static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+
+// Protected by s_stats_lock. Only fixed-size copies/counters under the lock;
+// the reader never waits for serialization, logging, queues or the MQTT SDK.
+static struct {
+    ld2450_report_t report;
+    int64_t received_us;
+    bool pending;
+} s_radar;
+static uint32_t s_radar_updates, s_radar_coalesced, s_radar_invalid, s_radar_deferred;
+// Publisher-owned scheduling state, never touched by the UART reader.
+static int64_t s_radar_next_publish_us, s_radar_next_failure_log_us;
 
 // Only small counter operations occur under this spinlock. Never call MQTT,
 // FreeRTOS queues or logging while holding it (MQTT callbacks hold an SDK lock).
@@ -242,15 +260,119 @@ static void service_event_queue(void)
     update_outbox_snapshot();
 }
 
+esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
+                                             int64_t received_us)
+{
+    unsigned count = 0;
+    if (report != NULL) {
+        for (unsigned i = 0; i < LD2450_TARGETS; ++i) count += report->targets[i].present;
+    }
+    if (report == NULL || report->count != count || received_us < 0 ||
+        received_us > esp_timer_get_time()) {
+        count_event(&s_radar_invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_stats_lock);
+    ++s_radar_updates;
+    if (s_radar.pending) ++s_radar_coalesced;
+    s_radar.report = *report;
+    s_radar.received_us = received_us;
+    s_radar.pending = true;
+    portEXIT_CRITICAL(&s_stats_lock);
+    return ESP_OK;
+}
+
+static int format_radar(char *payload, size_t capacity, const ld2450_report_t *report,
+                        int64_t received_us, uint32_t seq)
+{
+    int len = snprintf(payload, capacity,
+        "{\"sensor\":\"ld2450\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
+        ",\"uptime_ms\":%" PRId64 ",\"target_count\":%u,\"targets\":[",
+        s_boot_id, seq, received_us / 1000, report->count);
+    if (len < 0 || (size_t)len >= capacity) return -1;
+    bool first = true;
+    for (unsigned i = 0; i < LD2450_TARGETS; ++i) {
+        const ld2450_target_t *t = &report->targets[i];
+        if (!t->present) continue;
+        unsigned distance = (unsigned)(sqrtf((float)t->x_mm * t->x_mm +
+                                            (float)t->y_mm * t->y_mm) + 0.5f);
+        int n = snprintf(payload + len, capacity - len,
+            "%s{\"slot\":%u,\"x_mm\":%d,\"y_mm\":%d,\"distance_mm\":%u,"
+            "\"speed_cm_s\":%d,\"resolution_mm\":%u}",
+            first ? "" : ",", i + 1, t->x_mm, t->y_mm, distance,
+            t->speed_cm_s, t->resolution_mm);
+        if (n < 0 || (size_t)n >= capacity - len) return -1;
+        len += n;
+        first = false;
+    }
+    int n = snprintf(payload + len, capacity - len, "]}");
+    return n < 0 || (size_t)n >= capacity - len ? -1 : len + n;
+}
+
+// Only the existing MQTT worker calls this. A blocked transport cannot hold
+// the mailbox lock or stop UART reception. No replay/catch-up burst after stalls.
+static void service_radar_snapshot(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (now < s_radar_next_publish_us) return;
+    s_radar_next_publish_us = now + LD2450_PUBLISH_PERIOD_US;
+    // Preserve all eight queue slots for their existing users. Defer radar if
+    // any ACK/telemetry work is pending; the reader keeps replacing its snapshot.
+    if (s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue)) {
+        portENTER_CRITICAL(&s_stats_lock);
+        if (s_radar.pending) ++s_radar_deferred;
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
+    ld2450_report_t report;
+    int64_t received_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    bool pending = s_radar.pending;
+    report = s_radar.report;
+    received_us = s_radar.received_us;
+    s_radar.pending = false;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!pending) return; // No fabricated initial data or repeated old samples.
+    tx_stats_t *stats = &s_stats[TX_LD2450];
+    uint32_t seq = begin_attempt(TX_LD2450);
+    if (now - received_us >= LD2450_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    char payload[LD2450_PAYLOAD_SIZE];
+    int len = format_radar(payload, sizeof(payload), &report, received_us, seq);
+    if (len < 0) {
+        count_event(&stats->invalid);
+        return;
+    }
+    int64_t start_us = esp_timer_get_time();
+    int result = esp_mqtt_client_publish(s_client, LD2450_DATA_TOPIC, payload, len, 0, 0);
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;
+    if (result >= 0) ++stats->publish_ok;
+    else ++stats->publish_failed;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (result < 0 && esp_timer_get_time() >= s_radar_next_failure_log_us) {
+        ESP_LOGW(TAG, "%s publish failed (result=%d); see drop counters", LD2450_DATA_TOPIC, result);
+        s_radar_next_failure_log_us = esp_timer_get_time() + 10000000LL;
+    }
+}
+
 static void mqtt_tx_task(void *arg)
 {
     (void)arg;
     static const char *const topics[TX_KIND_COUNT] = {
-        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC
+        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC
     };
     tx_message_t message;
     int64_t next_failure_log_us = 0;
     while (true) {
+        service_radar_snapshot();
         if (xQueueReceive(s_tx_queue, &message, pdMS_TO_TICKS(1000)) != pdTRUE) {
             update_outbox_snapshot();
             service_event_queue();
@@ -319,6 +441,8 @@ void mqtt_manager_log_diagnostics(void)
     next_log_ms = now_ms + DIAGNOSTIC_PERIOD_MS;
     tx_stats_t snapshot[TX_KIND_COUNT];
     uint32_t connections, disconnects, errors, pubacked, deleted, event_offline, event_waits;
+    uint32_t radar_updates, radar_coalesced, radar_invalid, radar_deferred;
+    bool radar_pending;
     int peak, outbox_bytes;
     int64_t observed_ms, max_query_us;
     portENTER_CRITICAL(&s_stats_lock);
@@ -334,6 +458,11 @@ void mqtt_manager_log_diagnostics(void)
     outbox_bytes = s_outbox_bytes;
     observed_ms = s_outbox_observed_ms;
     max_query_us = s_max_outbox_query_us;
+    radar_updates = s_radar_updates;
+    radar_coalesced = s_radar_coalesced;
+    radar_invalid = s_radar_invalid;
+    radar_deferred = s_radar_deferred;
+    radar_pending = s_radar.pending;
     portEXIT_CRITICAL(&s_stats_lock);
     ESP_LOGI(TAG, "MQTT summary | boot=%08" PRIx32 " uptime_ms=%" PRId64
              " connected=%d tx_pending=%u",
@@ -353,7 +482,10 @@ void mqtt_manager_log_diagnostics(void)
              " local_max_age_ms=%d ack_reserve_bytes=%d",
              s_event_queue ? (unsigned)uxQueueMessagesWaiting(s_event_queue) : 0,
              event_offline, event_waits, EVENT_MAX_AGE_MS, ACK_OUTBOX_RESERVE_BYTES);
-    static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event"};
+    ESP_LOGI(TAG, "  radar_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
+             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d period_ms=1000 max_age_ms=2000",
+             radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending);
+    static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event", "ld2450"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
         ESP_LOGI(TAG, "%s attempts=%" PRIu32 " queued=%" PRIu32

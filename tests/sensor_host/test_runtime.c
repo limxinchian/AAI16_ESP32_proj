@@ -35,6 +35,7 @@ static int64_t rc_times[256], rc_event_times[16];
 static const char *rc_scenario;
 static bool radar_active, radar_missing, radar_errors, radar_init_failure, radar_task_failure;
 static unsigned radar_inits, radar_receives, radar_valid, radar_deinits;
+static unsigned radar_snapshots;
 static unsigned diagnostics_paused, dht_inits, gy_inits;
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
 static int64_t dht_times[64], gy_times[64];
@@ -177,6 +178,12 @@ esp_err_t ld2450_sensor_receive(ld2450_report_t *report, unsigned *frames)
 }
 void ld2450_sensor_get_diagnostics(ld2450_diagnostics_t *d)
 { *d = (ld2450_diagnostics_t){.frames = radar_valid}; }
+esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report, int64_t received_us)
+{
+    assert(task_index() == 3 && report->count == 0 && received_us == test_now_us);
+    assert(++radar_snapshots == radar_valid);
+    return ESP_OK;
+}
 esp_err_t spi_bus_manager_init(void) { return rc_active ? ESP_OK : ESP_FAIL; }
 esp_err_t rc522_sensor_init(void)
 {

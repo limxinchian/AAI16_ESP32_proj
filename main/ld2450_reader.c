@@ -1,6 +1,7 @@
 #include "ld2450_reader.h"
 #include "ld2450_sensor.h"
 #include "sensor_status.h"
+#include "mqtt_manager.h"
 #include <inttypes.h>
 #include <math.h>
 #include "esp_log.h"
@@ -55,7 +56,7 @@ static void ld2450_reader_task(void *arg)
     int64_t next_summary = started + SUMMARY_US, next_change_log = 0;
     unsigned displayed_mask = UINT32_MAX, timeouts = 0;
     ld2450_report_t report = {0};
-    ESP_LOGI("LD2450", "Waiting for first valid report (5000 ms); no MQTT");
+    ESP_LOGI("LD2450", "Waiting for first valid report (5000 ms); MQTT latest snapshot at ~1 Hz");
     while (true) {
         unsigned frames = 0;
         err = ld2450_sensor_receive(&report, &frames);
@@ -74,6 +75,10 @@ static void ld2450_reader_task(void *arg)
             for (unsigned i = 0; i < frames; ++i) sensor_status_record_read(SENSOR_LD2450, ESP_OK, now);
             last_valid = now;
             next_silence = now + SILENCE_US;
+            // A framing error can coexist with valid reports after resync.
+            // Only frames>0 proves report contains new, validated UART data.
+            // This copies a small mailbox; it never calls the MQTT SDK.
+            (void)mqtt_manager_update_ld2450_snapshot(&report, now);
         } else if (last_valid < 0 && now - started >= FIRST_REPORT_US) {
             sensor_status_record_init(SENSOR_LD2450, ESP_ERR_TIMEOUT);
             ESP_LOGE("LD2450", "No valid report within 5000 ms; unavailable; other sensors continue");

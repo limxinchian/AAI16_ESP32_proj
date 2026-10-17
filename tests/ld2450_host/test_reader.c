@@ -8,6 +8,9 @@ static jmp_buf stopped;
 static const char *scenario;
 static void (*created)(void *);
 static unsigned receives, valid, inits, deinits, deleted, delays;
+static unsigned snapshots;
+static ld2450_report_t latest_snapshot;
+static int64_t latest_received_us = -1;
 static int64_t stop_us=22200000;
 static bool is(const char *name) { return !strcmp(scenario,name); }
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
@@ -45,7 +48,14 @@ esp_err_t ld2450_sensor_receive(ld2450_report_t *r, unsigned *frames)
     if (!is("idle") && (!is("changes") || receives%2)) {
         r->count=1; r->targets[0]=(ld2450_target_t){true,-782,1713,-16,320};
     }
-    *frames=1; valid++; return ESP_OK;
+    *frames=1; valid++; return is("resync") ? ESP_ERR_INVALID_RESPONSE : ESP_OK;
+}
+esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report, int64_t received_us)
+{
+    // No elapsed time/SDK call/queue operation: reception remains independent.
+    assert(received_us == test_now_us && valid == snapshots + 1);
+    latest_snapshot = *report; latest_received_us = received_us; snapshots++;
+    return ESP_OK;
 }
 void ld2450_sensor_get_diagnostics(ld2450_diagnostics_t *d)
 { *d=(ld2450_diagnostics_t){.frames=valid,.rx_bytes=valid*30,.discarded_bytes=is("noise")?receives:0}; }
@@ -82,11 +92,16 @@ int main(int argc,char **argv)
             assert(test_log_calls<12); // Repeated errors do not flood serial.
         } else {
             assert(s.state==SENSOR_READY && !s.consecutive_failures);
-            assert(s.read_failures==(is("resume")?1U:0U));
+            assert(s.read_failures==(is("resync")?valid:is("resume")?1U:0U));
             if (is("changes")) assert(test_log_calls<50); // 10 Hz changes coalesced <=1 group/s.
-            else assert(test_log_calls<12); // Stable targets only startup + 10s summaries.
+            else assert(test_log_calls<(is("resync")?16U:12U)); // Extra warnings only on resync.
         }
     }
+    assert(snapshots == valid); // Init/noise/idle receive failures create no data.
+    if (valid) {
+        assert(latest_received_us == s.last_success_us);
+        assert(latest_snapshot.count == (is("idle") ? 0U : is("changes") ? receives%2 : 1U));
+    } else assert(latest_received_us == -1);
     for (sensor_id_t id=SENSOR_DHT22; id<=SENSOR_RC522; ++id) {
         assert(sensor_status_get(id,&s) && s.state==SENSOR_READY && s.read_successes==1);
         assert(!s.read_failures && s.last_success_us==123);
