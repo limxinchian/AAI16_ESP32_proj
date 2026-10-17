@@ -39,13 +39,26 @@ void vTaskDelayUntil(TickType_t *last_wake, TickType_t period)
     advance_to(*last_wake * 10000LL);
 }
 TickType_t xTaskGetTickCount(void) { return (TickType_t)(test_now_us / 10000); }
+BaseType_t xTaskNotify(TaskHandle_t task, uint32_t value, eNotifyAction action)
+{
+    assert(false); // These original regression scenarios only send DHT22 commands.
+    return pdFALSE;
+}
+BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
+                           uint32_t *value, TickType_t wait)
+{
+    assert(clear_entry == 0 && clear_exit == UINT32_MAX);
+    if (wait) vTaskDelay(wait);
+    return pdFALSE;
+}
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { return 1024; }
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
                       void *arg, unsigned priority, TaskHandle_t *handle)
 {
     assert(!strcmp(name, "gy511_reader") && stack == 4096 && priority == 4);
-    assert(!handle && !arg);
+    assert(handle && !arg);
     if (task_failure) return pdFALSE;
+    *handle = (TaskHandle_t)1;
     created_reader = fn;
     return pdPASS;
 }
@@ -81,18 +94,29 @@ esp_err_t mqtt_manager_publish_gy511(float ax, float ay, float az, float mx, flo
 {
     assert(ax == 1 && mx == 10); gy_publications++; return ESP_OK;
 }
-bool mqtt_manager_take_interval_update(uint32_t *interval)
+bool mqtt_manager_peek_interval_update(mqtt_interval_update_t *update)
 {
     if (command_flood || (command_at_us >= 0 && test_now_us >= command_at_us && !commands_taken)) {
-        *interval = 5000; commands_taken++; return true;
+        *update = (mqtt_interval_update_t){SENSOR_DHT22, 5000}; return true;
     }
     return false;
 }
-esp_err_t mqtt_manager_publish_config_ack(uint32_t interval)
+bool mqtt_manager_take_interval_update(mqtt_interval_update_t *update)
 {
+    if (!mqtt_manager_peek_interval_update(update)) return false;
+    commands_taken++; return true;
+}
+esp_err_t mqtt_manager_publish_config_ack(sensor_id_t sensor, uint32_t interval)
+{
+    assert(sensor == SENSOR_DHT22);
     applied_acks++; ack_interval = interval; return ESP_OK;
 }
-esp_err_t mqtt_manager_reject_config_unavailable(void) { rejected_acks++; return ESP_OK; }
+esp_err_t mqtt_manager_reject_config(const mqtt_interval_update_t *update, const char *reason)
+{
+    assert(update->sensor == SENSOR_DHT22 && update->interval_ms == 5000);
+    assert(!strcmp(reason, "sensor_unavailable"));
+    rejected_acks++; return ESP_OK;
+}
 void mqtt_manager_log_diagnostics(void) { diagnostics_calls++; }
 
 int main(int argc, char **argv)

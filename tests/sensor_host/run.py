@@ -1,7 +1,8 @@
 """Run sensor status and real app/cleanup paths with deterministic host doubles.
 
-Requires host gcc. No ESP-IDF checkout, credentials, serial, or network access.
-These tests do not emulate concurrent FreeRTOS tasks or physical sensor timing.
+Requires host gcc with pthread support. No ESP-IDF checkout, credentials, serial,
+or network access. Cooperative task doubles do not emulate ESP32 SMP execution
+or physical sensor timing.
 Usage: python tests/sensor_host/run.py
 """
 import argparse
@@ -30,14 +31,18 @@ flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-param
 for component in ["sensor_status", "dht22_moisture_sensor", "gy511_sensor",
                   "i2c_bus_manager", "wifi_manager", "mqtt_manager"]:
     flags += ["-I", str(repo / "components" / component / "include")]
-for name in ["test_status", "test_app", "test_gy511"]:
+for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(test / "platform.c")]
     if name != "test_gy511":
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
-    subprocess.run(flags + sources + ["-o", str(binary)], check=True)
+    threading_flags = ["-pthread"] if name == "test_runtime" else []
+    subprocess.run(flags + threading_flags + sources + ["-o", str(binary)], check=True)
     scenarios = (["healthy", "dht_init", "gy_init", "both_init", "bus_init", "gy_task",
                   "dht_reads", "gy_reads", "gy_overrun", "healthy_config", "healthy_flood",
                   "unavailable_flood"] if name == "test_app" else [None])
+    if name == "test_runtime":
+        scenarios = ["default", "changes", "mixed", "burst", "shorten", "rounding",
+                     "during_read", "gy_unavailable", "gy_task_failure", "dht_unavailable", "tick_wrap"]
     for scenario in scenarios:
-        subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True)
+        subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

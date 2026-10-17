@@ -24,6 +24,11 @@ typedef void *TaskHandle_t;
 #define pdFALSE 0
 // Match this project's 100 Hz tick configuration.
 #define pdMS_TO_TICKS(ms) ((ms) / 10)
+#define portTICK_PERIOD_MS 10
+typedef enum { eSetValueWithoutOverwrite } eNotifyAction;
+BaseType_t xTaskNotify(TaskHandle_t task, uint32_t value, eNotifyAction action);
+BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
+                           uint32_t *value, TickType_t wait);
 typedef int portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED 0
 void test_enter_critical(void);

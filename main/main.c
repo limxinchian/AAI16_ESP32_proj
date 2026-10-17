@@ -22,20 +22,54 @@
 #define JITTER_LIMIT_US 50000LL
 
 #define GY511_SAMPLE_MS 500
-// Serial display only; every successful 500 ms read is still published.
+// Serial display only; every successful read is still published.
 #define GY511_LOG_INTERVAL_MS 10000
+
+static TaskHandle_t s_gy511_task;
 
 static void gy511_reader_task(void *arg)
 {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(100));
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t next_due = xTaskGetTickCount();
+    TickType_t last_sample = next_due;
+    uint32_t active_interval_ms = GY511_SAMPLE_MS;
+    TickType_t period = pdMS_TO_TICKS(GY511_SAMPLE_MS);
+    uint32_t requested_ms = 0;
+    bool pending_update = false;
     int64_t next_log_us = 0;
     uint32_t reads = 0, ok = 0, overruns = 0;
     int64_t max_read_us = 0;
     esp_err_t last_status = ESP_OK;
 
     while (1) {
+        // Notification index 0 belongs exclusively to interval configuration.
+        // Bound work under a command flood; only this task commits its schedule.
+        for (unsigned commands = 0; commands < 4; ++commands) {
+            if (!pending_update &&
+                xTaskNotifyWait(0, UINT32_MAX, &requested_ms, 0) != pdTRUE) break;
+            pending_update = false;
+            active_interval_ms = requested_ms;
+            // Round up to the RTOS tick (10 ms in this project).
+            period = pdMS_TO_TICKS(active_interval_ms + portTICK_PERIOD_MS - 1);
+            // Repeated commands cannot postpone acquisition indefinitely.
+            next_due = last_sample + period;
+            TickType_t now = xTaskGetTickCount();
+            if ((int32_t)(next_due - now) < 0) next_due = now;
+            printf("\n[CONFIG] GY511 interval applied: %lu ms\n",
+                   (unsigned long)active_interval_ms);
+            (void)mqtt_manager_publish_config_ack(SENSOR_GY511, active_interval_ms);
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        int32_t remaining = (int32_t)(next_due - now);
+        if (remaining > 0) {
+            // A notification wakes the reader without waiting for the old period.
+            pending_update = xTaskNotifyWait(0, UINT32_MAX, &requested_ms,
+                                             (TickType_t)remaining) == pdTRUE;
+            continue;
+        }
+        last_sample = now;
         gy511_data_t reading = {0};
         int64_t start_us = esp_timer_get_time();
         esp_err_t err = gy511_sensor_read(&reading);
@@ -64,22 +98,22 @@ static void gy511_reader_task(void *arg)
                 printf("\n[GY511 #%04lu] Reading failed: %s\n",
                        (unsigned long)reads, esp_err_to_name(err));
             }
-            printf("              Period          : %d ms | Read: %.1f ms | Status: %s\n"
+            printf("              Period          : %lu ms | Read: %.1f ms | Status: %s\n"
                    "              Totals          : OK:%lu | Failed:%lu | Overruns:%lu\n"
                    "              Resources       : Stack min:%u B | Max read:%.1f ms | Uptime:%lld ms\n",
-                   GY511_SAMPLE_MS, read_us / 1000.0, err == ESP_OK ? "OK" : "FAIL",
+                   (unsigned long)active_interval_ms, read_us / 1000.0, err == ESP_OK ? "OK" : "FAIL",
                    (unsigned long)ok, (unsigned long)(reads - ok),
                    (unsigned long)overruns, (unsigned)uxTaskGetStackHighWaterMark(NULL),
                    max_read_us / 1000.0, (long long)(now_us / 1000));
         }
         last_status = err;
-        TickType_t period = pdMS_TO_TICKS(GY511_SAMPLE_MS);
-        if ((TickType_t)(xTaskGetTickCount() - last_wake) >= period) {
+        if ((TickType_t)(xTaskGetTickCount() - next_due) >= period) {
             // Skip missed periods instead of spinning to catch up after a stall.
             overruns++;
-            last_wake = xTaskGetTickCount();
+            next_due = xTaskGetTickCount();
         }
-        vTaskDelayUntil(&last_wake, period);
+        // Preserve vTaskDelayUntil's phase and full-period pause after an overrun.
+        next_due += period;
     }
 }
 
@@ -143,7 +177,7 @@ void app_main(void)
                 4096, // Task stack size (bytes in ESP-IDF)
                 NULL,
                 4, // Task priority
-                NULL);
+                &s_gy511_task);
 
             if (task_result != pdPASS)
             {
@@ -190,18 +224,35 @@ void app_main(void)
         bool dht22_available = sensor_status_can_sample(SENSOR_DHT22);
 
         // Check for validated MQTT configuration updates.
-        uint32_t requested_ms;
+        mqtt_interval_update_t update;
 
         // Bound work even if the broker continuously sends commands.
         for (unsigned commands = 0; commands < 4 &&
-             mqtt_manager_take_interval_update(&requested_ms); ++commands)
+             mqtt_manager_peek_interval_update(&update); ++commands)
         {
-            if (!dht22_available) {
+            if (!sensor_status_can_sample(update.sensor)) {
                 // Consume commands, but never claim an inactive sensor applied them.
                 // Queue failures remain visible in the existing MQTT diagnostics.
-                (void)mqtt_manager_reject_config_unavailable();
+                mqtt_manager_take_interval_update(&update);
+                (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
                 continue;
             }
+
+            if (update.sensor == SENSOR_GY511) {
+                // No overwrite: keep the FIFO head pending if the reader still
+                // has a notification. No ACK until that reader commits it.
+                if (xTaskNotify(s_gy511_task, update.interval_ms,
+                                eSetValueWithoutOverwrite) != pdPASS) break;
+                mqtt_manager_take_interval_update(&update);
+                continue;
+            }
+
+            mqtt_manager_take_interval_update(&update);
+            if (update.sensor != SENSOR_DHT22) {
+                (void)mqtt_manager_reject_config(&update, "unsupported_sensor");
+                continue;
+            }
+            uint32_t requested_ms = update.interval_ms;
 
             // Apply the new sampling interval.
             active_interval_ms = requested_ms;
@@ -220,7 +271,7 @@ void app_main(void)
             // Send application-level ACK over MQTT.
             esp_err_t ack_err =
                 mqtt_manager_publish_config_ack(
-                    active_interval_ms);
+                    SENSOR_DHT22, active_interval_ms);
 
             if (ack_err != ESP_OK)
             {

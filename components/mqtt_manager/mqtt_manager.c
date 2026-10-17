@@ -41,6 +41,36 @@
 #define DIAGNOSTIC_PERIOD_MS 60000
 #define MQTT_NETWORK_TIMEOUT_MS 10000
 
+typedef struct {
+    sensor_id_t id;
+    const char *name;
+    uint32_t min_interval_ms;
+    uint32_t max_interval_ms;
+} config_rule_t;
+
+// Application polling limits, independent of the sensors' internal data rates.
+// Adding a configurable sensor requires a rule and an owning application route.
+static const config_rule_t s_config_rules[] = {
+    {SENSOR_DHT22, "dht22", 2000, 10000},
+    {SENSOR_GY511, "gy511", 500, 10000},
+};
+
+static const config_rule_t *config_rule_for_id(sensor_id_t id)
+{
+    for (unsigned i = 0; i < sizeof(s_config_rules) / sizeof(s_config_rules[0]); ++i) {
+        if (s_config_rules[i].id == id) return &s_config_rules[i];
+    }
+    return NULL;
+}
+
+static const config_rule_t *config_rule_for_name(const char *name)
+{
+    for (unsigned i = 0; i < sizeof(s_config_rules) / sizeof(s_config_rules[0]); ++i) {
+        if (strcmp(s_config_rules[i].name, name) == 0) return &s_config_rules[i];
+    }
+    return NULL;
+}
+
 static const char *TAG = "AAI16_MQTT";
 
 static esp_mqtt_client_handle_t s_client = NULL;
@@ -269,31 +299,49 @@ void mqtt_manager_log_diagnostics(void)
 // Send rejected configuration ACK
 // --------------------------------------------------
 
-static esp_err_t mqtt_send_rejected_ack(const char *reason)
+static esp_err_t mqtt_send_rejected_ack(const char *sensor, const char *reason,
+                                       const double *interval)
 {
     if (reason == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     begin_attempt(TX_CONFIG_ACK);
+    // Escape untrusted sensor IDs (including unsupported names). Malformed JSON
+    // has no trustworthy target, so report JSON null rather than inventing one.
+    char sensor_json[262] = "null", reason_json[128], interval_json[64] = "";
+    cJSON sensor_value = {.type = cJSON_String, .valuestring = (char *)sensor};
+    cJSON reason_value = {.type = cJSON_String, .valuestring = (char *)reason};
+    if ((sensor != NULL && !cJSON_PrintPreallocated(&sensor_value, sensor_json,
+                                                   sizeof(sensor_json), false)) ||
+        !cJSON_PrintPreallocated(&reason_value, reason_json, sizeof(reason_json), false)) {
+        count_event(&s_stats[TX_CONFIG_ACK].invalid);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (interval != NULL && isfinite(*interval)) {
+        snprintf(interval_json, sizeof(interval_json), ",\"interval_ms\":%.17g", *interval);
+    }
     tx_message_t message = {.kind = TX_CONFIG_ACK};
     message.len = snprintf(
         message.payload,
         sizeof(message.payload),
-        "{\"sensor\":\"dht22\","
+        "{\"sensor\":%s,"
         "\"status\":\"rejected\","
-        "\"reason\":\"%s\"}",
-        reason
+        "\"reason\":%s%s}",
+        sensor_json, reason_json, interval_json
     );
 
     // Failures are counted and reported by the rate-limited diagnostics.
     return queue_message(&message);
 }
 
-esp_err_t mqtt_manager_reject_config_unavailable(void)
+esp_err_t mqtt_manager_reject_config(const mqtt_interval_update_t *update,
+                                      const char *reason)
 {
-    // Current runtime configuration targets DHT22 only. Preserve the same
-    // rejection schema and QoS 1 queue/outbox path as validation rejections.
-    return mqtt_send_rejected_ack("sensor_unavailable");
+    if (update == NULL) return ESP_ERR_INVALID_ARG;
+    const config_rule_t *rule = config_rule_for_id(update->sensor);
+    if (rule == NULL) return ESP_ERR_INVALID_ARG;
+    double interval = update->interval_ms;
+    return mqtt_send_rejected_ack(rule->name, reason, &interval);
 }
 
 
@@ -401,7 +449,7 @@ static void mqtt_event_handler(
             );
 
             mqtt_send_rejected_ack(
-                "invalid_payload_size_or_fragmented"
+                NULL, "invalid_payload_size_or_fragmented", NULL
             );
 
             break;
@@ -426,7 +474,7 @@ static void mqtt_event_handler(
                 (size_t)event->data_len
             ) != NULL) {
 
-            mqtt_send_rejected_ack("invalid_json");
+            mqtt_send_rejected_ack(NULL, "invalid_json", NULL);
             break;
         }
 
@@ -440,7 +488,7 @@ static void mqtt_event_handler(
         if (!cJSON_IsObject(root)) {
             ESP_LOGW(TAG, "Invalid JSON received.");
 
-            mqtt_send_rejected_ack("invalid_json");
+            mqtt_send_rejected_ack(NULL, "invalid_json", NULL);
 
             cJSON_Delete(root);
             break;
@@ -466,23 +514,21 @@ static void mqtt_event_handler(
             sensor->valuestring == NULL) {
 
             mqtt_send_rejected_ack(
-                "missing_or_invalid_sensor"
+                NULL, "missing_or_invalid_sensor", NULL
             );
 
             cJSON_Delete(root);
             break;
         }
 
-        // This prototype currently supports DHT22.
-        if (strcmp(
-                sensor->valuestring,
-                "dht22"
-            ) != 0) {
+        const config_rule_t *rule = config_rule_for_name(sensor->valuestring);
+        const double *requested_value = cJSON_IsNumber(interval) ? &interval->valuedouble : NULL;
+        if (rule == NULL) {
 
             ESP_LOGW(TAG, "Unsupported sensor.");
 
             mqtt_send_rejected_ack(
-                "unsupported_sensor"
+                sensor->valuestring, "unsupported_sensor", requested_value
             );
 
             cJSON_Delete(root);
@@ -496,7 +542,7 @@ static void mqtt_event_handler(
         if (!cJSON_IsNumber(interval)) {
 
             mqtt_send_rejected_ack(
-                "missing_or_invalid_interval_ms"
+                rule->name, "missing_or_invalid_interval_ms", NULL
             );
 
             cJSON_Delete(root);
@@ -505,9 +551,8 @@ static void mqtt_event_handler(
 
         double value = interval->valuedouble;
 
-        // Allowed DHT22 interval: 2000-10000 ms.
-        // The value must also be an integer.
-        if (!(value >= 2000 && value <= 10000) ||
+        // Check bounds before converting, including non-finite JSON numbers.
+        if (!(value >= rule->min_interval_ms && value <= rule->max_interval_ms) ||
             value != (double)(uint32_t)value) {
 
             ESP_LOGW(
@@ -515,15 +560,16 @@ static void mqtt_event_handler(
                 "Invalid sampling interval."
             );
 
-            mqtt_send_rejected_ack(
-                "interval_ms must be an integer from 2000 to 10000"
-            );
+            char reason[96];
+            snprintf(reason, sizeof(reason), "interval_ms must be an integer from %lu to %lu",
+                     (unsigned long)rule->min_interval_ms, (unsigned long)rule->max_interval_ms);
+            mqtt_send_rejected_ack(rule->name, reason, &value);
 
             cJSON_Delete(root);
             break;
         }
 
-        uint32_t requested_ms = (uint32_t)value;
+        mqtt_interval_update_t update = {rule->id, (uint32_t)value};
 
         cJSON_Delete(root);
 
@@ -534,7 +580,7 @@ static void mqtt_event_handler(
         if (s_config_queue == NULL ||
             xQueueSend(
                 s_config_queue,
-                &requested_ms,
+                &update,
                 0
             ) != pdTRUE) {
 
@@ -543,14 +589,14 @@ static void mqtt_event_handler(
                 "Configuration queue full."
             );
 
-            mqtt_send_rejected_ack("queue_full");
+            mqtt_manager_reject_config(&update, "queue_full");
             break;
         }
 
         ESP_LOGI(
             TAG,
-            "Valid configuration queued: %lu ms",
-            (unsigned long)requested_ms
+            "%s configuration queued: %lu ms",
+            rule->name, (unsigned long)update.interval_ms
         );
 
         break;
@@ -617,7 +663,7 @@ esp_err_t mqtt_manager_init(void)
     // Create configuration queue.
     s_config_queue = xQueueCreate(
         CONFIG_QUEUE_SIZE,
-        sizeof(uint32_t)
+        sizeof(mqtt_interval_update_t)
     );
 
     if (s_config_queue == NULL) {
@@ -759,18 +805,16 @@ esp_err_t mqtt_manager_publish_dht22(
 // Retrieve validated configuration from queue
 // --------------------------------------------------
 
-bool mqtt_manager_take_interval_update(
-    uint32_t *out_ms)
+bool mqtt_manager_peek_interval_update(mqtt_interval_update_t *out)
 {
-    if (s_config_queue == NULL || out_ms == NULL) {
-        return false;
-    }
+    return s_config_queue != NULL && out != NULL &&
+           xQueuePeek(s_config_queue, out, 0) == pdTRUE;
+}
 
-    return xQueueReceive(
-        s_config_queue,
-        out_ms,
-        0
-    ) == pdTRUE;
+bool mqtt_manager_take_interval_update(mqtt_interval_update_t *out)
+{
+    return s_config_queue != NULL && out != NULL &&
+           xQueueReceive(s_config_queue, out, 0) == pdTRUE;
 }
 
 
@@ -779,16 +823,20 @@ bool mqtt_manager_take_interval_update(
 // --------------------------------------------------
 
 esp_err_t mqtt_manager_publish_config_ack(
+    sensor_id_t sensor,
     uint32_t interval_ms)
 {
+    const config_rule_t *rule = config_rule_for_id(sensor);
+    if (rule == NULL) return ESP_ERR_INVALID_ARG;
     begin_attempt(TX_CONFIG_ACK);
     tx_message_t message = {.kind = TX_CONFIG_ACK};
     message.len = snprintf(
         message.payload,
         sizeof(message.payload),
-        "{\"sensor\":\"dht22\","
+        "{\"sensor\":\"%s\","
         "\"status\":\"applied\","
         "\"interval_ms\":%lu}",
+        rule->name,
         (unsigned long)interval_ms
     );
 
