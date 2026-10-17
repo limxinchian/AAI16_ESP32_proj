@@ -26,8 +26,9 @@ esp_err_t mqtt_manager_init(void);
 
 // Publication functions copy into a bounded local queue with zero queue wait.
 // ESP_OK means local queue acceptance, NOT ESP-MQTT enqueue or broker delivery.
-// The worker publishes QoS 0 directly; only QoS 1 configuration ACKs use the
-// SDK outbox. publish_ok = local write success; enqueued = ACK outbox acceptance.
+// The worker publishes periodic samples at QoS 0; configuration ACKs and RFID
+// events use the QoS 1 SDK outbox. publish_ok = local write success;
+// enqueued = SDK outbox acceptance. PUBACK/SDK expiry totals cover both kinds.
 // Neither proves subscriber receipt. See routine diagnostics for all drops.
 // seq counts per-sensor API attempts (including skipped/failed submissions).
 // uptime_ms is successful-read submission time, before either queue.
@@ -36,6 +37,16 @@ esp_err_t mqtt_manager_publish_dht22(
     float temperature_c,
     float humidity_pct
 );
+
+// Call once per presentation, not per poll. Copies 4/7/10-byte UIDs; uppercase
+// uid_hex has no separators. Separate 8-event FIFO accepts while disconnected,
+// drops newest when full, and expires waiting events after 60000 ms. No flash
+// persistence. seq counts attempts, including rejected/dropped submissions.
+// Publisher uses non-retained QoS 1 with a 1024-byte event outbox allowance,
+// preserving 4096 bytes for ACKs/control. SDK expiry remains its existing 30 s
+// default after enqueue. ESP_OK means local acceptance, not broker delivery.
+// SDK retries can deliver duplicates: deduplicate by (sensor, boot_id, seq).
+esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_length);
 
 // Publish only after the acquisition owner commits the requested operation.
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update);

@@ -127,17 +127,79 @@ int main(void)
         else assert(rejected > 1000 && peak <= 3072 && peak > 2800 && writes == 900 && expired == 0);
     }
     // Outbox exhaustion is still enforced for ACKs; QoS 0 does not compete.
-    int result;
-    do { result = esp_mqtt_client_enqueue(&client, "aai16/config/ack", ack, strlen(ack), 1, 0, true); }
-    while (result >= 0);
+    int result, baseline_ack_count = 0;
+    while ((result = esp_mqtt_client_enqueue(&client, "aai16/config/ack", ack, strlen(ack), 1, 0, true)) >= 0)
+        baseline_ack_count++;
     assert(result == -2);
     uint64_t full_size = outbox_get_size(client.outbox);
     assert(full_size < 4096 + 64); // SDK admission excludes packet framing.
     assert(esp_mqtt_client_publish(&client, topic, payload, len, 0, 0) == 0);
     assert(outbox_get_size(client.outbox) == full_size && lock_depth == 0);
+
+    // RFID uses the same SDK QoS 1 lifecycle. Retransmission preserves the
+    // application identity/payload and packet ID, while setting MQTT's DUP bit.
+    clear_outbox(&client);
+    client.config->outbox_limit = 5120;
+    now_ms = 0;
+    const char *event_topic = "aai16/sensors/rc522/event";
+    char event[] = "{\"sensor\":\"rc522\",\"event\":\"card_presented\",\"uid_hex\":\"00112233445566778899\","
+                   "\"uid_length\":10,\"boot_id\":\"12345678\",\"seq\":1,\"uptime_ms\":123456}";
+    size_t event_len = strlen(event);
+    int event_id = esp_mqtt_client_enqueue(&client, event_topic, event, event_len, 1, 0, true);
+    assert(event_id > 0);
+    item = outbox_get(client.outbox, event_id);
+    wire = outbox_item_get_data(item, &wire_len, &id, &type, &qos);
+    assert(id == event_id && qos == 1 && type == MQTT_MSG_TYPE_PUBLISH);
+    assert(!(wire[0] & 0x09)); // Neither DUP nor RETAIN on first transmission.
+    assert(!memcmp(wire + wire_len - event_len, event, event_len));
+    event[0] = 'X';
+    assert(wire[wire_len - event_len] == '{'); // Owned SDK copy.
+    event[0] = '{';
+    sdk_drain_one_queued(&client);
+    assert(outbox_item_get_pending(item) == TRANSMITTED);
+    int writes_before = writes;
+    assert(mqtt_resend_queued(&client, item) == ESP_OK);
+    assert(writes == writes_before + 1 && (wire[0] & 0x08));
+    assert(client.mqtt_state.pending_msg_id == event_id);
+    assert(!memcmp(wire + wire_len - event_len, event, event_len));
+    assert(outbox_delete(client.outbox, event_id, MQTT_MSG_TYPE_PUBLISH) == ESP_OK);
+
+    // Once accepted, a disconnect leaves ownership with the SDK. Its existing
+    // 30 s expiry is independent of the manager's 60 s pre-enqueue window.
+    event_id = esp_mqtt_client_enqueue(&client, event_topic, event, event_len, 1, 0, true);
+    assert(event_id > 0);
+    client.state = MQTT_STATE_DISCONNECTED;
+    assert(outbox_get(client.outbox, event_id));
+    assert(outbox_delete_single_expired(client.outbox, 30000, 30000) == -1);
+    assert(outbox_delete_single_expired(client.outbox, 30001, 30000) == event_id);
+    assert(outbox_get_size(client.outbox) == 0);
+    client.state = MQTT_STATE_CONNECTED;
+
+    // Verify the manager's conservative full-packet estimate against actual
+    // SDK allocations, then fill ACKs to prove their old capacity is preserved.
+    uint64_t packet_bound = event_len + strlen(event_topic) + 9;
+    int event_count = 0;
+    while (outbox_get_size(client.outbox) + packet_bound <= 1024) {
+        uint64_t before = outbox_get_size(client.outbox);
+        assert(esp_mqtt_client_enqueue(&client, event_topic, event, event_len, 1, 0, true) > 0);
+        assert(outbox_get_size(client.outbox) - before <= packet_bound);
+        event_count++;
+    }
+    uint64_t event_bytes = outbox_get_size(client.outbox);
+    assert(event_count > 0 && event_bytes <= 1024);
+    int ack_count = 0;
+    while ((result = esp_mqtt_client_enqueue(&client, "aai16/config/ack", ack, strlen(ack), 1, 0, true)) >= 0)
+        ack_count++;
+    assert(result == -2 && ack_count >= baseline_ack_count);
+    full_size = outbox_get_size(client.outbox);
+    assert(full_size < 5120 + 64); // SDK admission still excludes packet framing.
+    assert(esp_mqtt_client_publish(&client, topic, payload, len, 0, 0) == 0);
+    assert(outbox_get_size(client.outbox) == full_size && lock_depth == 0);
+    printf("SDK RFID reserve: events=%d bytes=%" PRIu64 " ACK capacity=%d (baseline=%d)\n",
+           event_count, event_bytes, ack_count, baseline_ack_count);
     mqtt_msg_buffer_destroy(&client.mqtt_state.connection);
     outbox_destroy(client.outbox);
     free(client.config);
-    puts("PASS: installed SDK publish/enqueue semantics, QoS0 cleanup, ACK ownership/lifecycle, expiry, saturation model");
+    puts("PASS: installed SDK publish/enqueue, QoS0 cleanup, ACK/RFID ownership, QoS1 DUP identity, expiry, ACK reserve, saturation model");
     return 0;
 }

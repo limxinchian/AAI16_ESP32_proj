@@ -8,7 +8,19 @@ static jmp_buf stopped;
 static const char *scenario;
 static void (*created)(void *);
 static unsigned polls, init_calls, deleted;
+static unsigned events;
+static rc522_uid_t presented[4];
 static int64_t times[64], stop_us = 2600000;
+
+esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t length)
+{
+    assert(events < 4 && (length == 4 || length == 7 || length == 10));
+    presented[events].length = length;
+    memcpy(presented[events++].bytes, uid, length);
+    if (!strcmp(scenario, "mqtt_offline")) return ESP_ERR_INVALID_STATE;
+    if (!strcmp(scenario, "mqtt_full")) return ESP_ERR_NO_MEM;
+    return ESP_OK;
+}
 
 esp_err_t spi_bus_manager_init(void) { return !strcmp(scenario, "spi_init") ? ESP_ERR_NO_MEM : ESP_OK; }
 esp_err_t rc522_sensor_init(void) { init_calls++; return !strcmp(scenario, "init") ? ESP_ERR_INVALID_RESPONSE : ESP_OK; }
@@ -37,11 +49,14 @@ esp_err_t rc522_sensor_poll(rc522_uid_t *uid, bool *present)
     *present = false;
     if (!strcmp(scenario, "reads")) return ESP_ERR_TIMEOUT;
     if (!strcmp(scenario, "resume") && sample < 2) return ESP_ERR_INVALID_CRC;
+    if (!strcmp(scenario, "held_error") && sample == 3) return ESP_ERR_TIMEOUT;
     if (!strcmp(scenario, "idle") || (!strcmp(scenario, "remove") && sample >= 3 && sample <= 5) ||
         (!strcmp(scenario, "resume") && sample < 7)) return ESP_OK;
     if (!strcmp(scenario, "overrun") && sample == 0) test_now_us += 700000;
     *present = true;
     *uid = (rc522_uid_t){.length = 10, .bytes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}};
+    if (!strcmp(scenario, "uid4")) uid->length = 4;
+    if (!strcmp(scenario, "uid7")) uid->length = 7;
     if (!strcmp(scenario, "change") && sample >= 5) uid->bytes[0] = 0xff;
     return ESP_OK;
 }
@@ -69,13 +84,24 @@ int main(int argc, char **argv)
         } else {
             assert(status.state == SENSOR_READY && status.last_success_us >= 0);
             unsigned expected_logs = (!strcmp(scenario, "remove") || !strcmp(scenario, "change") ||
-                                      !strcmp(scenario, "resume")) ? 3 : 2;
-            assert(test_log_calls == expected_logs && strstr(test_last_log, "UID (10 bytes):"));
-            assert(status.read_failures == (!strcmp(scenario, "resume") ? 2U : 0U));
+                                      !strcmp(scenario, "resume") || !strcmp(scenario, "held_error")) ? 3 : 2;
+            assert(test_log_calls == expected_logs);
+            if (strcmp(scenario, "held_error")) assert(strstr(test_last_log, "UID ("));
+            assert(status.read_failures == (!strcmp(scenario, "resume") ? 2U :
+                                           !strcmp(scenario, "held_error") ? 1U : 0U));
             assert(status.consecutive_failures == 0);
         }
         if (!strcmp(scenario, "overrun")) assert(times[0] == 0 && times[1] == 900000 && times[2] == 1100000);
         else for (unsigned i = 0; i < polls; ++i) assert(times[i] == i * 200000LL);
+    }
+    if (!init_calls || deleted || !strcmp(scenario, "idle") || !strcmp(scenario, "reads")) assert(events == 0);
+    else {
+        unsigned count = (!strcmp(scenario, "remove") || !strcmp(scenario, "change")) ? 2 : 1;
+        assert(events == count);
+        assert(presented[0].length == (!strcmp(scenario, "uid4") ? 4 : !strcmp(scenario, "uid7") ? 7 : 10));
+        for (unsigned i = 0; i < presented[0].length; ++i) assert(presented[0].bytes[i] == i);
+        if (!strcmp(scenario, "remove")) assert(!memcmp(&presented[0], &presented[1], sizeof(presented[0])));
+        if (!strcmp(scenario, "change")) assert(presented[1].bytes[0] == 0xff);
     }
     printf("PASS: RC522 reader scenario %s\n", scenario);
     return 0;

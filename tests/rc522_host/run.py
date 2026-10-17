@@ -22,7 +22,7 @@ for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "freertos/FreeRTOS.h",
     header.write_text('#include "platform.h"\n')
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output), "-I", str(repo / "main")]
-for component in ["spi_bus_manager", "rc522_sensor", "sensor_status"]:
+for component in ["spi_bus_manager", "rc522_sensor", "sensor_status", "mqtt_manager"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_spi", "test_rc522", "test_reader"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
@@ -31,6 +31,7 @@ for name in ["test_spi", "test_rc522", "test_reader"]:
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     subprocess.run(flags + sources + ["-o", str(binary)], check=True)
     scenarios = (["idle", "held", "remove", "change", "spi_init", "task", "init", "reads",
-                  "resume", "overrun"] if name == "test_reader" else [None])
+                  "resume", "overrun", "mqtt_offline", "mqtt_full", "uid4", "uid7",
+                  "held_error"] if name == "test_reader" else [None])
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

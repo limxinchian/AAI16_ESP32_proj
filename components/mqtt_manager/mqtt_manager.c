@@ -29,13 +29,20 @@
 
 #define DHT22_DATA_TOPIC "aai16/sensors/dht22/data"
 #define GY511_DATA_TOPIC "aai16/sensors/gy511/data"
+#define RC522_EVENT_TOPIC "aai16/sensors/rc522/event"
 
 #define CONFIG_QUEUE_SIZE 4
 #define MQTT_CONNECTED_BIT BIT0
 #define TX_QUEUE_SIZE 8
 #define TX_PAYLOAD_SIZE 320
 #define TELEMETRY_MAX_AGE_MS 2000
-#define OUTBOX_LIMIT_BYTES 4096
+// Keep the original 4096-byte allowance available to configuration ACKs/control
+// traffic. Events may occupy at most an additional 1024 serialized bytes.
+#define ACK_OUTBOX_RESERVE_BYTES 4096
+#define EVENT_OUTBOX_BUDGET_BYTES 1024
+#define OUTBOX_LIMIT_BYTES (ACK_OUTBOX_RESERVE_BYTES + EVENT_OUTBOX_BUDGET_BYTES)
+#define EVENT_QUEUE_SIZE 8
+#define EVENT_MAX_AGE_MS 60000
 // Routine summaries: set to 10000 temporarily for a detailed hardware test.
 // Connection/error events are logged immediately regardless of this interval.
 #define DIAGNOSTIC_PERIOD_MS 60000
@@ -78,6 +85,7 @@ static esp_mqtt_client_handle_t s_client = NULL;
 static QueueHandle_t s_config_queue = NULL;
 static EventGroupHandle_t s_mqtt_events = NULL;
 static QueueHandle_t s_tx_queue = NULL;
+static QueueHandle_t s_event_queue = NULL;
 static uint32_t s_boot_id;
 static TaskHandle_t s_tx_task;
 
@@ -85,6 +93,7 @@ typedef enum {
     TX_DHT22,
     TX_GY511,
     TX_CONFIG_ACK,
+    TX_RC522_EVENT,
     TX_KIND_COUNT
 } tx_kind_t;
 
@@ -112,7 +121,10 @@ typedef struct {
 
 static tx_stats_t s_stats[TX_KIND_COUNT];
 static uint32_t s_connections, s_disconnects, s_errors;
-static uint32_t s_ack_pubacked, s_outbox_deleted;
+// SDK receipts contain packet IDs, not application kinds. Keep these totals
+// explicitly shared; an RFID PUBACK must never be reported as a config ACK.
+static uint32_t s_qos1_pubacked, s_outbox_deleted;
+static uint32_t s_event_offline_buffered, s_event_outbox_waits;
 static int s_outbox_peak, s_outbox_bytes;
 static int64_t s_outbox_observed_ms, s_max_outbox_query_us;
 static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -147,16 +159,20 @@ static esp_err_t queue_message(const tx_message_t *message)
         count_event(&stats->invalid);
         return ESP_ERR_INVALID_SIZE;
     }
-    if (s_tx_queue == NULL || !mqtt_connected()) {
+    bool event = message->kind == TX_RC522_EVENT;
+    QueueHandle_t queue = event ? s_event_queue : s_tx_queue;
+    bool connected = mqtt_connected();
+    if (queue == NULL || (!event && !connected)) {
         count_event(&stats->offline);
         return ESP_ERR_INVALID_STATE;
     }
     // Zero wait: acquisition tasks never take the ESP-MQTT API mutex.
-    if (xQueueSend(s_tx_queue, message, 0) != pdTRUE) {
+    if (xQueueSend(queue, message, 0) != pdTRUE) {
         count_event(&stats->queue_full);
         return ESP_ERR_NO_MEM;
     }
     count_event(&stats->queued);
+    if (event && !connected) count_event(&s_event_offline_buffered);
     return ESP_OK; // Local queue acceptance only; not an MQTT delivery receipt.
 }
 
@@ -177,28 +193,77 @@ static int update_outbox_snapshot(void)
     return bytes;
 }
 
+// Called only by the existing publisher. Keep the head in its queue until
+// accepted/dropped, including across disconnects; no unbounded retry copies.
+static void service_event_queue(void)
+{
+    tx_message_t message;
+    if (xQueuePeek(s_event_queue, &message, 0) != pdTRUE) return;
+    tx_stats_t *stats = &s_stats[message.kind];
+    if (esp_timer_get_time() / 1000 - message.created_ms > EVENT_MAX_AGE_MS) {
+        xQueueReceive(s_event_queue, &message, 0);
+        count_event(&stats->stale);
+        return;
+    }
+    // Existing telemetry/ACK work gets priority. Events never consume its slots.
+    if (!mqtt_connected() || uxQueueMessagesWaiting(s_tx_queue)) return;
+    int bytes = update_outbox_snapshot();
+    // MQTT 3.1.1 PUBLISH: at most 5 fixed-header bytes + 2 topic-length bytes
+    // + topic + 2 packet-ID bytes + payload. SDK admission checks payload only;
+    // account for the complete packet here, conservatively, to protect ACKs.
+    int packet_bound = message.len + (int)strlen(RC522_EVENT_TOPIC) + 9;
+    if (bytes < 0 || bytes + packet_bound > EVENT_OUTBOX_BUDGET_BYTES) {
+        count_event(&s_event_outbox_waits); // Deferred, not dropped.
+        return;
+    }
+    // The SDK snapshot can wait on its API mutex. Recheck age and pending ACKs.
+    if (esp_timer_get_time() / 1000 - message.created_ms > EVENT_MAX_AGE_MS) {
+        xQueueReceive(s_event_queue, &message, 0);
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected() || uxQueueMessagesWaiting(s_tx_queue)) return;
+    int64_t start_us = esp_timer_get_time();
+    int msg_id = esp_mqtt_client_enqueue(s_client, RC522_EVENT_TOPIC,
+        message.payload, message.len, 1, 0, true);
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;
+    if (msg_id >= 0) stats->enqueued++;
+    else if (msg_id == -2) s_event_outbox_waits++;
+    else stats->enqueue_failed++;
+    portEXIT_CRITICAL(&s_stats_lock);
+    // -2 is backpressure: retain the same event/sequence until room or local
+    // expiry. Other enqueue failures drop this event and are counted above.
+    if (msg_id != -2) xQueueReceive(s_event_queue, &message, 0);
+    update_outbox_snapshot();
+}
+
 static void mqtt_tx_task(void *arg)
 {
     (void)arg;
     static const char *const topics[TX_KIND_COUNT] = {
-        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC
+        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC
     };
     tx_message_t message;
     int64_t next_failure_log_us = 0;
     while (true) {
         if (xQueueReceive(s_tx_queue, &message, pdMS_TO_TICKS(1000)) != pdTRUE) {
             update_outbox_snapshot();
+            service_event_queue();
             continue;
         }
         tx_stats_t *stats = &s_stats[message.kind];
         if (!mqtt_connected()) {
             count_event(&stats->offline);
+            service_event_queue();
             continue;
         }
         bool telemetry = message.kind != TX_CONFIG_ACK;
         if (telemetry && esp_timer_get_time() / 1000 - message.created_ms >
                          TELEMETRY_MAX_AGE_MS) {
             count_event(&stats->stale);
+            service_event_queue();
             continue;
         }
         int64_t start_us = esp_timer_get_time();
@@ -236,6 +301,7 @@ static void mqtt_tx_task(void *arg)
             next_failure_log_us = esp_timer_get_time() + 10000000LL;
         }
         update_outbox_snapshot();
+        service_event_queue();
     }
 }
 
@@ -249,7 +315,7 @@ void mqtt_manager_log_diagnostics(void)
     }
     next_log_ms = now_ms + DIAGNOSTIC_PERIOD_MS;
     tx_stats_t snapshot[TX_KIND_COUNT];
-    uint32_t connections, disconnects, errors, pubacked, deleted;
+    uint32_t connections, disconnects, errors, pubacked, deleted, event_offline, event_waits;
     int peak, outbox_bytes;
     int64_t observed_ms, max_query_us;
     portENTER_CRITICAL(&s_stats_lock);
@@ -257,8 +323,10 @@ void mqtt_manager_log_diagnostics(void)
     connections = s_connections;
     disconnects = s_disconnects;
     errors = s_errors;
-    pubacked = s_ack_pubacked;
+    pubacked = s_qos1_pubacked;
     deleted = s_outbox_deleted;
+    event_offline = s_event_offline_buffered;
+    event_waits = s_event_outbox_waits;
     peak = s_outbox_peak;
     outbox_bytes = s_outbox_bytes;
     observed_ms = s_outbox_observed_ms;
@@ -269,7 +337,7 @@ void mqtt_manager_log_diagnostics(void)
              s_boot_id, now_ms, mqtt_connected(),
              s_tx_queue ? (unsigned)uxQueueMessagesWaiting(s_tx_queue) : 0);
     ESP_LOGI(TAG, "  connects=%" PRIu32 " disconnects=%" PRIu32 " errors=%" PRIu32
-             " ack_pubacked=%" PRIu32 " outbox_deleted=%" PRIu32,
+             " qos1_pubacked_total=%" PRIu32 " outbox_deleted=%" PRIu32,
              connections, disconnects, errors, pubacked, deleted);
     ESP_LOGI(TAG, "  outbox_observed_bytes=%d peak_observed=%d age_ms=%" PRId64
              " max_query_us=%" PRId64, outbox_bytes, peak,
@@ -278,7 +346,11 @@ void mqtt_manager_log_diagnostics(void)
              esp_get_free_heap_size(),
              esp_get_minimum_free_heap_size(),
              s_tx_task ? (unsigned)uxTaskGetStackHighWaterMark(s_tx_task) : 0);
-    static const char *const names[] = {"dht22", "gy511", "config_ack"};
+    ESP_LOGI(TAG, "  events_pending=%u offline_buffered=%" PRIu32 " outbox_waits=%" PRIu32
+             " local_max_age_ms=%d ack_reserve_bytes=%d",
+             s_event_queue ? (unsigned)uxQueueMessagesWaiting(s_event_queue) : 0,
+             event_offline, event_waits, EVENT_MAX_AGE_MS, ACK_OUTBOX_RESERVE_BYTES);
+    static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
         ESP_LOGI(TAG, "%s attempts=%" PRIu32 " queued=%" PRIu32
@@ -658,10 +730,10 @@ static void mqtt_event_handler(
         break;
     }
 
-    // Only QoS 1 configuration ACKs generate this event. QoS 0 telemetry has
-    // no broker receipt. PUBACK also does not prove any subscriber received it.
+    // Shared total for config ACKs and RFID events. QoS 0 has no broker receipt;
+    // PUBACK also does not prove that any subscriber received the publication.
     case MQTT_EVENT_PUBLISHED:
-        count_event(&s_ack_pubacked);
+        count_event(&s_qos1_pubacked);
         break;
 
     case MQTT_EVENT_DELETED:
@@ -709,6 +781,10 @@ esp_err_t mqtt_manager_init(void)
     }
     s_tx_queue = xQueueCreate(TX_QUEUE_SIZE, sizeof(tx_message_t));
     if (s_tx_queue == NULL) {
+        goto fail;
+    }
+    s_event_queue = xQueueCreate(EVENT_QUEUE_SIZE, sizeof(tx_message_t));
+    if (s_event_queue == NULL) {
         goto fail;
     }
 
@@ -769,6 +845,9 @@ esp_err_t mqtt_manager_init(void)
              " tx_slots=%d outbox_limit=%d diagnostics_ms=%d;"
              " QoS0 publish success is not a broker receipt",
              s_boot_id, TX_QUEUE_SIZE, OUTBOX_LIMIT_BYTES, DIAGNOSTIC_PERIOD_MS);
+    ESP_LOGI(TAG, "Event publisher: QoS1 retain=0 slots=%d local_max_age_ms=%d "
+             "outbox_budget=%d ack_reserve=%d; PUBACK/SDK expiry counters are shared",
+             EVENT_QUEUE_SIZE, EVENT_MAX_AGE_MS, EVENT_OUTBOX_BUDGET_BYTES, ACK_OUTBOX_RESERVE_BYTES);
 #if !CONFIG_MQTT_REPORT_DELETED_MESSAGES
     ESP_LOGW(TAG, "Outbox expiry events disabled in sdkconfig");
 #endif
@@ -782,6 +861,10 @@ fail:
     if (s_tx_queue != NULL) {
         vQueueDelete(s_tx_queue);
         s_tx_queue = NULL;
+    }
+    if (s_event_queue != NULL) {
+        vQueueDelete(s_event_queue);
+        s_event_queue = NULL;
     }
     if (s_mqtt_events != NULL) {
         vEventGroupDelete(s_mqtt_events);
@@ -823,6 +906,28 @@ esp_err_t mqtt_manager_publish_dht22(
         humidity_pct
     );
 
+    return queue_message(&message);
+}
+
+esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_length)
+{
+    uint32_t seq = begin_attempt(TX_RC522_EVENT);
+    if (uid == NULL || (uid_length != 4 && uid_length != 7 && uid_length != 10)) {
+        count_event(&s_stats[TX_RC522_EVENT].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    static const char hex[] = "0123456789ABCDEF";
+    char uid_hex[21];
+    for (unsigned i = 0; i < uid_length; ++i) {
+        uid_hex[2 * i] = hex[uid[i] >> 4];
+        uid_hex[2 * i + 1] = hex[uid[i] & 0x0f];
+    }
+    uid_hex[2 * uid_length] = '\0';
+    tx_message_t message = {.kind = TX_RC522_EVENT, .created_ms = esp_timer_get_time() / 1000};
+    message.len = snprintf(message.payload, sizeof(message.payload),
+        "{\"sensor\":\"rc522\",\"event\":\"card_presented\",\"uid_hex\":\"%s\",\"uid_length\":%u,"
+        "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ",\"uptime_ms\":%" PRId64 "}",
+        uid_hex, (unsigned)uid_length, s_boot_id, seq, message.created_ms);
     return queue_message(&message);
 }
 

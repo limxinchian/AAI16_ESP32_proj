@@ -2,6 +2,7 @@
 #include "rc522_sensor.h"
 #include "sensor_status.h"
 #include "spi_bus_manager.h"
+#include "mqtt_manager.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,7 +29,7 @@ static void rc522_reader_task(void *arg)
     int64_t next_error_log_us = 0;
     TickType_t last_wake = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(POLL_MS);
-    ESP_LOGI("RC522", "Reader running | poll=%d ms | UID only, no MQTT", POLL_MS);
+    ESP_LOGI("RC522", "Reader running | poll=%d ms | MQTT card presentation events", POLL_MS);
     while (true) {
         rc522_uid_t uid;
         bool present;
@@ -46,6 +47,9 @@ static void rc522_reader_task(void *arg)
             sensor_status_record_read(SENSOR_RC522, ESP_OK, now);
             idle_polls = 0;
             if (uid.length != last_uid.length || memcmp(uid.bytes, last_uid.bytes, uid.length)) {
+                // Zero-wait handoff only. Delivery failures belong to MQTT
+                // diagnostics, not sensor health; do not retry a held card.
+                (void)mqtt_manager_publish_rc522_event(uid.bytes, uid.length);
                 char text[30]; // Ten hex bytes, nine spaces and NUL.
                 size_t used = 0;
                 for (unsigned i = 0; i < uid.length; ++i) {
