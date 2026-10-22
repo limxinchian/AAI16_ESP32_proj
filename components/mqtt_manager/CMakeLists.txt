@@ -10,5 +10,6 @@ idf_component_register(
         json
         sensor_status
         ld2450_sensor
+        hcsr04p_sensor
     PRIV_REQUIRES esp_timer esp_hw_support
 )

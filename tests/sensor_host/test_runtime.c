@@ -48,6 +48,7 @@ static unsigned diagnostics_paused, dht_inits, gy_inits;
 static bool ultra_active, ultra_missing, ultra_invalid, ultra_resume;
 static bool ultra_init_failure, ultra_task_failure, ultra_overrun;
 static unsigned ultra_inits, ultra_reads, wifi_starts, mqtt_starts;
+static unsigned ultra_snapshots;
 static int64_t ultra_times[128];
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
 static int64_t dht_times[64], gy_times[64];
@@ -182,6 +183,14 @@ esp_err_t hcsr04p_sensor_init(void)
     assert(task_index() == 4);
     ultra_inits++;
     return ultra_init_failure ? ESP_ERR_NO_MEM : ESP_OK;
+}
+esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading, int64_t acquired_us)
+{
+    assert(task_index() == 4 && acquired_us == test_now_us);
+    assert(reading->distance_cm == 100 && reading->echo_us == 5830.9f);
+    ultra_snapshots++;
+    // Transport unavailability must not change any reader's health/schedule.
+    return ESP_ERR_INVALID_STATE;
 }
 esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out)
 {
@@ -913,6 +922,7 @@ int main(int argc, char **argv)
         }
         sensor_status_t status;
         assert(sensor_status_get(SENSOR_HCSR04P, &status));
+        assert(ultra_snapshots == status.read_successes);
         assert(ultra_inits == (ultra_task_failure ? 0U : 1U));
         if (ultra_init_failure || ultra_task_failure) {
             assert(!ultra_reads && status.state == SENSOR_UNAVAILABLE && !status.initialized);

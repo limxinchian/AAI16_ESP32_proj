@@ -1,6 +1,7 @@
 #include "hcsr04p_reader.h"
 #include "hcsr04p_sensor.h"
 #include "sensor_status.h"
+#include "mqtt_manager.h"
 
 #include <inttypes.h>
 #include "esp_log.h"
@@ -53,6 +54,11 @@ static void hcsr04p_reader_task(void *arg)
         timeouts += err == ESP_ERR_TIMEOUT;
         invalid += err == ESP_ERR_INVALID_RESPONSE;
         sensor_status_record_read(SENSOR_HCSR04P, err, completed);
+        if (err == ESP_OK) {
+            // Fixed-size handoff on every success, independently of DATA logs
+            // and the MQTT schedule. Transport outcomes never change health.
+            (void)mqtt_manager_update_hcsr04p_snapshot(&reading, completed);
+        }
         if (err == ESP_OK && completed >= next_log) {
             next_log = completed + READING_LOG_US;
             ESP_LOGI("SENSOR", "hcsr04p | DATA | distance=%.1f cm echo=%.1f us read=%.2f ms",

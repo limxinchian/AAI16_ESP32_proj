@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "sensor_status.h"
 #include "ld2450_sensor.h"
+#include "hcsr04p_sensor.h"
 
 typedef enum {
     MQTT_CONFIG_INTERVAL,
@@ -61,6 +62,21 @@ esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_lengt
 // sensor status. This path uses neither the shared TX queue nor the QoS 1 outbox.
 esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
                                              int64_t received_us);
+
+// Reader task only: hand off an ESP_OK reading with its read-completion time.
+// Copies one latest-valid snapshot under a short spinlock; no allocation, queue
+// wait or SDK call. New successes replace unpublished data, including offline.
+// The existing publisher consumes at most one snapshot per 1000 ms, QoS 0,
+// retain=0, after pending ACK/telemetry/RFID work. Age >=2000 ms is rejected
+// immediately before SDK submission. No retry or resend of a consumed sample.
+// Failed acquisitions MUST NOT call this API: a previous success can remain
+// eligible until consumed/replaced/expired, with its original timestamp intact.
+// seq counts consumed publication attempts, including offline/stale/SDK drops;
+// it starts at 1 per boot and wraps as uint32_t. Replacements, invalid updates
+// and busy deferrals do not advance seq. uptime_ms = acquired_us / 1000.
+// ESP_OK means snapshot acceptance only. MQTT outcomes never alter sensor health.
+esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
+                                              int64_t acquired_us);
 
 // LD2450 reader owner only, after generic availability/disabled-policy checks.
 // Atomically commit the publication gate/interval; never call the MQTT SDK.

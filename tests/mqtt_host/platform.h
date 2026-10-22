@@ -13,6 +13,9 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_ARG 0x102
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_ERR_INVALID_SIZE 0x104
+#define ESP_ERR_TIMEOUT 0x107
+#define ESP_ERR_INVALID_RESPONSE 0x108
+const char *esp_err_to_name(esp_err_t error);
 #define ESP_EVENT_ANY_ID -1
 #define CONFIG_MQTT_REPORT_DELETED_MESSAGES 1
 #define BIT0 1
@@ -75,6 +78,8 @@ void vEventGroupDelete(EventGroupHandle_t group);
 int xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
                 void *arg, unsigned priority, TaskHandle_t *handle);
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task);
+void vTaskDelay(TickType_t ticks);
+void vTaskDelete(TaskHandle_t task);
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *config);
 int esp_mqtt_client_register_event(esp_mqtt_client_handle_t client, int id,
     void (*handler)(void *, esp_event_base_t, int32_t, void *), void *arg);

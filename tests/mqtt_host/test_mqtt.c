@@ -20,6 +20,7 @@ static int last_qos;
 static char last_payload[LD2450_PAYLOAD_SIZE], last_topic[64];
 static unsigned critical_depth;
 static void (*publish_hook)(void);
+static void (*distance_reader)(void *);
 static void (*timer_hook)(void);
 static unsigned timer_hook_countdown, last_worker_wait;
 void test_enter_critical(void) { assert(!critical_depth); critical_depth++; }
@@ -80,7 +81,15 @@ void xEventGroupClearBits(EventGroupHandle_t g, unsigned b) { *g &= ~b; }
 void vEventGroupDelete(EventGroupHandle_t g) { free(g); allocs--; }
 int xTaskCreate(void (*f)(void *), const char *n, unsigned s, void *a,
                 unsigned p, TaskHandle_t *h)
-{ if (failure()) return 0; *h = (void *)1; return pdPASS; }
+{
+    assert(s == 4096 && p == 3 && !a);
+    if (!strcmp(n, "hcsr04p_reader")) {
+        assert(!h); distance_reader = f; return pdPASS;
+    }
+    assert(!strcmp(n, "mqtt_tx") && h);
+    if (failure()) return 0;
+    *h = (void *)1; return pdPASS;
+}
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t) { return 1024; }
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *c)
 {
@@ -302,6 +311,7 @@ static void test_rfid_events(void)
 }
 
 #include "test_radar.c"
+#include "test_hcsr04p.c"
 
 int main(void)
 {
@@ -633,6 +643,7 @@ int main(void)
     assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
     test_radar_telemetry();
     test_radar_config();
+    test_hcsr04p_telemetry();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +

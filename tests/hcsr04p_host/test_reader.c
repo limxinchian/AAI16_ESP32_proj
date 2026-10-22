@@ -9,6 +9,9 @@ static jmp_buf stopped;
 static void (*reader)(void *);
 static bool init_fail, task_fail, missing, invalid, resume, overrun, jitter, alternating;
 static unsigned reads, inits, delays;
+static unsigned snapshots;
+static bool mqtt_failure;
+static int64_t last_acquired_us = -1;
 static int64_t start_us, stop_us, times[128];
 
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
@@ -29,6 +32,15 @@ void vTaskDelay(TickType_t ticks)
     if (test_now_us >= stop_us) longjmp(stopped, 1);
 }
 esp_err_t hcsr04p_sensor_init(void) { inits++; return init_fail ? ESP_ERR_NO_MEM : ESP_OK; }
+esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading, int64_t acquired_us)
+{
+    assert(reading->distance_cm == 17.15f && reading->echo_us == 1000);
+    assert(acquired_us == test_now_us && acquired_us > last_acquired_us);
+    sensor_status_t status;
+    assert(sensor_status_get(SENSOR_HCSR04P, &status) && status.last_success_us == acquired_us);
+    snapshots++; last_acquired_us = acquired_us;
+    return mqtt_failure ? ESP_FAIL : ESP_OK;
+}
 esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out)
 {
     assert(reads < 128 && inits == 1);
@@ -50,6 +62,7 @@ int main(int argc, char **argv)
     missing = !strcmp(argv[1], "missing"); invalid = !strcmp(argv[1], "invalid");
     resume = !strcmp(argv[1], "resume"); overrun = !strcmp(argv[1], "overrun");
     jitter = !strcmp(argv[1], "jitter"); alternating = !strcmp(argv[1], "alternating");
+    mqtt_failure = !strcmp(argv[1], "mqtt_failure");
     start_us = !strcmp(argv[1], "wrap") ? ((int64_t)UINT32_MAX - 30) * 10000 : 0;
     test_now_us = start_us;
     // Stop after the first summary but before a later reading can replace the
@@ -59,6 +72,7 @@ int main(int argc, char **argv)
     if (!setjmp(stopped) && reader) reader(NULL);
     sensor_status_t s;
     assert(sensor_status_get(SENSOR_HCSR04P, &s));
+    assert(snapshots == s.read_successes && last_acquired_us == s.last_success_us);
     if (init_fail || task_fail) {
         assert(!reads && s.state == SENSOR_UNAVAILABLE && !s.initialized);
         assert(inits == (task_fail ? 0U : 1U) && test_log_calls == 1);

@@ -23,7 +23,7 @@ for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "esp_rom_sys.h",
     header.write_text('#include "platform.h"\n')
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output), "-I", str(repo / "main")]
-for component in ["hcsr04p_sensor", "sensor_status"]:
+for component in ["hcsr04p_sensor", "sensor_status", "mqtt_manager", "ld2450_sensor"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_driver", "test_reader"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
@@ -32,6 +32,6 @@ for name in ["test_driver", "test_reader"]:
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     subprocess.run(flags + sources + ["-lm", "-o", str(binary)], check=True)
     scenarios = (["healthy", "missing", "invalid", "resume", "init", "task",
-                  "overrun", "jitter", "wrap", "alternating"] if name == "test_reader" else [None])
+                  "overrun", "jitter", "wrap", "alternating", "mqtt_failure"] if name == "test_reader" else [None])
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

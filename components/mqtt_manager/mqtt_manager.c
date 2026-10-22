@@ -31,6 +31,7 @@
 #define GY511_DATA_TOPIC "aai16/sensors/gy511/data"
 #define RC522_EVENT_TOPIC "aai16/sensors/rc522/event"
 #define LD2450_DATA_TOPIC "aai16/sensors/ld2450/data"
+#define HCSR04P_DATA_TOPIC "aai16/sensors/hcsr04p/data"
 
 #define CONFIG_QUEUE_SIZE 4
 #define MQTT_CONNECTED_BIT BIT0
@@ -42,6 +43,10 @@
 #define LD2450_PAYLOAD_SIZE 512
 #define LD2450_DEFAULT_INTERVAL_MS 1000
 #define LD2450_MAX_AGE_US 2000000LL
+#define HCSR04P_PAYLOAD_SIZE 160
+#define HCSR04P_PUBLISH_INTERVAL_US 1000000LL
+#define HCSR04P_MAX_AGE_US (TELEMETRY_MAX_AGE_MS * 1000LL)
+_Static_assert(HCSR04P_PAYLOAD_SIZE <= TX_PAYLOAD_SIZE, "Distance payload exceeds telemetry capacity");
 // Keep the original 4096-byte allowance available to configuration ACKs/control
 // traffic. Events may occupy at most an additional 1024 serialized bytes.
 #define ACK_OUTBOX_RESERVE_BYTES 4096
@@ -107,6 +112,7 @@ typedef enum {
     TX_CONFIG_ACK,
     TX_RC522_EVENT,
     TX_LD2450,
+    TX_HCSR04P,
     TX_KIND_COUNT
 } tx_kind_t;
 
@@ -156,6 +162,16 @@ static bool s_radar_enabled = true;
 static uint32_t s_radar_interval_ms = LD2450_DEFAULT_INTERVAL_MS, s_radar_epoch;
 static int64_t s_radar_next_publish_us;
 static int64_t s_radar_next_failure_log_us; // Publisher only.
+
+// Same bounded handoff as radar. Snapshot and counters use s_stats_lock;
+// only the existing publisher owns the fixed publication deadline.
+static struct {
+    hcsr04p_reading_t reading;
+    int64_t acquired_us;
+    bool pending;
+} s_hcsr04p;
+static uint32_t s_hcsr04p_updates, s_hcsr04p_coalesced, s_hcsr04p_invalid, s_hcsr04p_deferred;
+static int64_t s_hcsr04p_next_publish_us, s_hcsr04p_next_failure_log_us;
 
 // Only small counter operations occur under this spinlock. Never call MQTT,
 // FreeRTOS queues or logging while holding it (MQTT callbacks hold an SDK lock).
@@ -419,11 +435,110 @@ static void service_radar_snapshot(void)
     }
 }
 
+esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
+                                              int64_t acquired_us)
+{
+    // The driver validates pulse/range before handoff. Also bound this API's
+    // inputs so non-finite numbers or invalid timestamps cannot reach JSON.
+    if (reading == NULL || !isfinite(reading->distance_cm) || !isfinite(reading->echo_us) ||
+        reading->distance_cm < HCSR04P_MIN_CM || reading->distance_cm > HCSR04P_MAX_CM ||
+        reading->echo_us <= 0 || reading->echo_us > HCSR04P_ECHO_TIMEOUT_MS * 1000 ||
+        acquired_us < 0 || acquired_us > esp_timer_get_time()) {
+        count_event(&s_hcsr04p_invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_stats_lock);
+    ++s_hcsr04p_updates;
+    if (s_hcsr04p.pending) ++s_hcsr04p_coalesced;
+    s_hcsr04p.reading = *reading;
+    s_hcsr04p.acquired_us = acquired_us;
+    s_hcsr04p.pending = true;
+    portEXIT_CRITICAL(&s_stats_lock);
+    return ESP_OK;
+}
+
+static int format_hcsr04p(char *payload, size_t capacity, const hcsr04p_reading_t *reading,
+                         int64_t acquired_us, uint32_t seq)
+{
+    int len = snprintf(payload, capacity,
+        "{\"sensor\":\"hcsr04p\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
+        ",\"uptime_ms\":%" PRId64 ",\"distance_cm\":%.1f,\"echo_us\":%.1f}",
+        s_boot_id, seq, acquired_us / 1000, reading->distance_cm, reading->echo_us);
+    return len < 0 || (size_t)len >= capacity ? -1 : len;
+}
+
+// Publisher task only. Slow SDK calls hold a local copy, never the mailbox lock.
+static void service_hcsr04p_snapshot(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (now < s_hcsr04p_next_publish_us) return;
+    s_hcsr04p_next_publish_us = now + HCSR04P_PUBLISH_INTERVAL_US;
+    // Preserve ACK/telemetry slots, event priority and all QoS 1 outbox capacity.
+    bool busy = (s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue)) ||
+                (s_event_queue != NULL && uxQueueMessagesWaiting(s_event_queue));
+    hcsr04p_reading_t reading;
+    int64_t acquired_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (busy) {
+        if (s_hcsr04p.pending) ++s_hcsr04p_deferred;
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
+    bool pending = s_hcsr04p.pending;
+    reading = s_hcsr04p.reading;
+    acquired_us = s_hcsr04p.acquired_us;
+    s_hcsr04p.pending = false;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!pending) return;
+    tx_stats_t *stats = &s_stats[TX_HCSR04P];
+    uint32_t seq = begin_attempt(TX_HCSR04P);
+    if (now - acquired_us >= HCSR04P_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    char payload[HCSR04P_PAYLOAD_SIZE];
+    int len = format_hcsr04p(payload, sizeof(payload), &reading, acquired_us, seq);
+    if (len < 0) {
+        count_event(&stats->invalid); // Serialization failure, separate from invalid updates.
+        return;
+    }
+    // Serialization/preemption can age data; check again at SDK admission.
+    int64_t start_us = esp_timer_get_time();
+    if (start_us - acquired_us >= HCSR04P_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    int result = esp_mqtt_client_publish(s_client, HCSR04P_DATA_TOPIC, payload, len, 0, 0);
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;
+    if (result >= 0) ++stats->publish_ok; // SDK success, never a broker/subscriber receipt.
+    else ++stats->publish_failed;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (result < 0 && esp_timer_get_time() >= s_hcsr04p_next_failure_log_us) {
+        ESP_LOGW(TAG, "%s publish failed (result=%d); see drop counters", HCSR04P_DATA_TOPIC, result);
+        s_hcsr04p_next_failure_log_us = esp_timer_get_time() + 10000000LL;
+    }
+}
+
 static TickType_t publisher_wait_ticks(void)
 {
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&s_stats_lock);
     int64_t remaining = s_radar_enabled ? s_radar_next_publish_us - now : 1000000;
+    // A pending distance sample may be due before the radar deadline. With
+    // no sample, the existing 1 s ceiling still discovers the next handoff.
+    if (s_hcsr04p.pending && s_hcsr04p_next_publish_us - now < remaining) {
+        remaining = s_hcsr04p_next_publish_us - now;
+    }
     portEXIT_CRITICAL(&s_stats_lock);
     // The old fixed 1 s wait would prevent 500 ms publication on an idle queue.
     // Keep the existing 1 s ceiling and round up to at least one RTOS tick.
@@ -436,12 +551,13 @@ static void mqtt_tx_task(void *arg)
 {
     (void)arg;
     static const char *const topics[TX_KIND_COUNT] = {
-        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC
+        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC, HCSR04P_DATA_TOPIC
     };
     tx_message_t message;
     int64_t next_failure_log_us = 0;
     while (true) {
         service_radar_snapshot();
+        service_hcsr04p_snapshot();
         if (xQueueReceive(s_tx_queue, &message, publisher_wait_ticks()) != pdTRUE) {
             update_outbox_snapshot();
             service_event_queue();
@@ -511,6 +627,8 @@ void mqtt_manager_log_diagnostics(void)
     tx_stats_t snapshot[TX_KIND_COUNT];
     uint32_t connections, disconnects, errors, pubacked, deleted, event_offline, event_waits;
     uint32_t radar_updates, radar_coalesced, radar_invalid, radar_deferred;
+    uint32_t hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred;
+    bool hcsr04p_pending;
     bool radar_pending;
     bool radar_enabled;
     uint32_t radar_interval_ms;
@@ -536,6 +654,11 @@ void mqtt_manager_log_diagnostics(void)
     radar_pending = s_radar.pending;
     radar_enabled = s_radar_enabled;
     radar_interval_ms = s_radar_interval_ms;
+    hcsr04p_updates = s_hcsr04p_updates;
+    hcsr04p_coalesced = s_hcsr04p_coalesced;
+    hcsr04p_invalid = s_hcsr04p_invalid;
+    hcsr04p_deferred = s_hcsr04p_deferred;
+    hcsr04p_pending = s_hcsr04p.pending;
     portEXIT_CRITICAL(&s_stats_lock);
     ESP_LOGI(TAG, "MQTT summary | boot=%08" PRIx32 " uptime_ms=%" PRId64
              " connected=%d tx_pending=%u",
@@ -558,7 +681,10 @@ void mqtt_manager_log_diagnostics(void)
     ESP_LOGI(TAG, "  radar_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
              " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=%" PRIu32 " max_age_ms=2000",
              radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending, radar_enabled, radar_interval_ms);
-    static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event", "ld2450"};
+    ESP_LOGI(TAG, "  hcsr04p_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
+             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d period_ms=1000 max_age_ms=2000",
+             hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred, hcsr04p_pending);
+    static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event", "ld2450", "hcsr04p"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
         ESP_LOGI(TAG, "%s attempts=%" PRIu32 " queued=%" PRIu32
