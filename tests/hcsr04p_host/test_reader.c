@@ -17,9 +17,9 @@ static int64_t start_us, stop_us, times[128];
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
     void *arg, unsigned priority, TaskHandle_t *handle)
 {
-    assert(!strcmp(name, "hcsr04p_reader") && stack == 4096 && priority == 3 && !arg && !handle);
+    assert(!strcmp(name, "hcsr04p_reader") && stack == 4096 && priority == 3 && !arg && handle);
     if (task_fail) return pdFALSE;
-    reader = fn; return pdPASS;
+    reader = fn; *handle = (void *)1; return pdPASS;
 }
 void vTaskDelete(TaskHandle_t task) { assert(!task && init_fail); longjmp(stopped, 1); }
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { assert(!task); return 2000; }
@@ -32,6 +32,15 @@ void vTaskDelay(TickType_t ticks)
     if (test_now_us >= stop_us) longjmp(stopped, 1);
 }
 esp_err_t hcsr04p_sensor_init(void) { inits++; return init_fail ? ESP_ERR_NO_MEM : ESP_OK; }
+BaseType_t xTaskNotifyWait(uint32_t entry, uint32_t exit, uint32_t *value, TickType_t wait)
+{
+    assert(!entry && exit == UINT32_MAX);
+    if (wait) vTaskDelay(wait);
+    return pdFALSE;
+}
+void mqtt_manager_commit_hcsr04p_enabled(bool enabled) { assert(false); }
+esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update) { assert(false); return ESP_FAIL; }
+esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const char *reason) { assert(false); return ESP_FAIL; }
 esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading, int64_t acquired_us)
 {
     assert(reading->distance_cm == 17.15f && reading->echo_us == 1000);
@@ -69,9 +78,11 @@ int main(int argc, char **argv)
     // shared log double's last record, including the shifted overrun schedule.
     stop_us = start_us + (overrun ? 10200000 : 10450000);
     hcsr04p_reader_start();
+    assert(hcsr04p_reader_task_handle() == NULL);
     if (!setjmp(stopped) && reader) reader(NULL);
     sensor_status_t s;
     assert(sensor_status_get(SENSOR_HCSR04P, &s));
+    assert((hcsr04p_reader_task_handle() != NULL) == !(init_fail || task_fail));
     assert(snapshots == s.read_successes && last_acquired_us == s.last_success_us);
     if (init_fail || task_fail) {
         assert(!reads && s.state == SENSOR_UNAVAILABLE && !s.initialized);

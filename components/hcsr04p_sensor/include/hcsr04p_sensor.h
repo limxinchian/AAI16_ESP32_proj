@@ -7,6 +7,8 @@
 #define HCSR04P_ECHO_GPIO 5
 #define HCSR04P_MIN_CYCLE_MS 60
 #define HCSR04P_SAMPLE_MS 200
+#define HCSR04P_MIN_INTERVAL_MS 100
+#define HCSR04P_MAX_INTERVAL_MS 10000
 #define HCSR04P_ECHO_TIMEOUT_MS 30
 #define HCSR04P_MIN_CM 2
 #define HCSR04P_MAX_CM 400
@@ -23,4 +25,7 @@ esp_err_t hcsr04p_sensor_init(void);
 // Blocks only the caller on an ISR queue, with a 30 ms response deadline.
 // At 100 Hz the RTOS wait is 4 ticks (30..40 ms plus scheduling latency).
 // Output is cleared on failure. Calls <60 ms after a trigger are rejected.
+// On return capture is disarmed under the ISR lock. The owner can pause here
+// without releasing resources; idle callbacks are ignored and the next read
+// drains any queued completion before arming a fresh trigger.
 esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out);

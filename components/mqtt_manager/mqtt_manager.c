@@ -77,6 +77,8 @@ static const config_rule_t s_config_rules[] = {
     // Publication period only: at most two replaceable radar samples/second.
     // UART acquisition and the 2 s freshness limit remain independent.
     {SENSOR_LD2450, "ld2450", 500, 10000},
+    // Actual acquisition period; MQTT stays at its independent 1000 ms cadence.
+    {SENSOR_HCSR04P, "hcsr04p", HCSR04P_MIN_INTERVAL_MS, HCSR04P_MAX_INTERVAL_MS},
 };
 
 static const config_rule_t *config_rule_for_id(sensor_id_t id)
@@ -172,6 +174,8 @@ static struct {
 } s_hcsr04p;
 static uint32_t s_hcsr04p_updates, s_hcsr04p_coalesced, s_hcsr04p_invalid, s_hcsr04p_deferred;
 static int64_t s_hcsr04p_next_publish_us, s_hcsr04p_next_failure_log_us;
+static bool s_hcsr04p_enabled = true; // Gate and epoch protected by s_stats_lock.
+static uint32_t s_hcsr04p_epoch;
 
 // Only small counter operations occur under this spinlock. Never call MQTT,
 // FreeRTOS queues or logging while holding it (MQTT callbacks hold an SDK lock).
@@ -448,6 +452,10 @@ esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
         return ESP_ERR_INVALID_ARG;
     }
     portENTER_CRITICAL(&s_stats_lock);
+    if (!s_hcsr04p_enabled) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     ++s_hcsr04p_updates;
     if (s_hcsr04p.pending) ++s_hcsr04p_coalesced;
     s_hcsr04p.reading = *reading;
@@ -455,6 +463,17 @@ esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
     s_hcsr04p.pending = true;
     portEXIT_CRITICAL(&s_stats_lock);
     return ESP_OK;
+}
+
+void mqtt_manager_commit_hcsr04p_enabled(bool enabled)
+{
+    portENTER_CRITICAL(&s_stats_lock);
+    if (s_hcsr04p_enabled != enabled) {
+        s_hcsr04p_enabled = enabled;
+        s_hcsr04p.pending = false;
+        ++s_hcsr04p_epoch;
+    }
+    portEXIT_CRITICAL(&s_stats_lock);
 }
 
 static int format_hcsr04p(char *payload, size_t capacity, const hcsr04p_reading_t *reading,
@@ -478,13 +497,19 @@ static void service_hcsr04p_snapshot(void)
                 (s_event_queue != NULL && uxQueueMessagesWaiting(s_event_queue));
     hcsr04p_reading_t reading;
     int64_t acquired_us;
+    uint32_t epoch;
     portENTER_CRITICAL(&s_stats_lock);
+    if (!s_hcsr04p_enabled) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
     if (busy) {
         if (s_hcsr04p.pending) ++s_hcsr04p_deferred;
         portEXIT_CRITICAL(&s_stats_lock);
         return;
     }
     bool pending = s_hcsr04p.pending;
+    epoch = s_hcsr04p_epoch;
     reading = s_hcsr04p.reading;
     acquired_us = s_hcsr04p.acquired_us;
     s_hcsr04p.pending = false;
@@ -508,6 +533,11 @@ static void service_hcsr04p_snapshot(void)
     }
     // Serialization/preemption can age data; check again at SDK admission.
     int64_t start_us = esp_timer_get_time();
+    portENTER_CRITICAL(&s_stats_lock);
+    bool admitted = s_hcsr04p_enabled && epoch == s_hcsr04p_epoch;
+    if (!admitted) ++stats->cancelled;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!admitted) return;
     if (start_us - acquired_us >= HCSR04P_MAX_AGE_US) {
         count_event(&stats->stale);
         return;
@@ -628,7 +658,7 @@ void mqtt_manager_log_diagnostics(void)
     uint32_t connections, disconnects, errors, pubacked, deleted, event_offline, event_waits;
     uint32_t radar_updates, radar_coalesced, radar_invalid, radar_deferred;
     uint32_t hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred;
-    bool hcsr04p_pending;
+    bool hcsr04p_pending, hcsr04p_enabled;
     bool radar_pending;
     bool radar_enabled;
     uint32_t radar_interval_ms;
@@ -659,6 +689,7 @@ void mqtt_manager_log_diagnostics(void)
     hcsr04p_invalid = s_hcsr04p_invalid;
     hcsr04p_deferred = s_hcsr04p_deferred;
     hcsr04p_pending = s_hcsr04p.pending;
+    hcsr04p_enabled = s_hcsr04p_enabled;
     portEXIT_CRITICAL(&s_stats_lock);
     ESP_LOGI(TAG, "MQTT summary | boot=%08" PRIx32 " uptime_ms=%" PRId64
              " connected=%d tx_pending=%u",
@@ -682,8 +713,8 @@ void mqtt_manager_log_diagnostics(void)
              " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=%" PRIu32 " max_age_ms=2000",
              radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending, radar_enabled, radar_interval_ms);
     ESP_LOGI(TAG, "  hcsr04p_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
-             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d period_ms=1000 max_age_ms=2000",
-             hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred, hcsr04p_pending);
+             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=1000 max_age_ms=2000",
+             hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred, hcsr04p_pending, hcsr04p_enabled);
     static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event", "ld2450", "hcsr04p"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];

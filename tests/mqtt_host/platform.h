@@ -79,6 +79,7 @@ int xTaskCreate(void (*fn)(void *), const char *name, unsigned stack,
                 void *arg, unsigned priority, TaskHandle_t *handle);
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
+int xTaskNotifyWait(uint32_t entry, uint32_t exit, uint32_t *value, TickType_t wait);
 void vTaskDelete(TaskHandle_t task);
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *config);
 int esp_mqtt_client_register_event(esp_mqtt_client_handle_t client, int id,

@@ -75,8 +75,17 @@ esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
 // it starts at 1 per boot and wraps as uint32_t. Replacements, invalid updates
 // and busy deferrals do not advance seq. uptime_ms = acquired_us / 1000.
 // ESP_OK means snapshot acceptance only. MQTT outcomes never alter sensor health.
+// Disabled handoffs return ESP_ERR_INVALID_STATE. Gate transitions cancel any
+// consumed attempt not yet admitted to the SDK (counted as cancelled).
 esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
                                               int64_t acquired_us);
+
+// HC-SR04P reader owner only, between complete acquisitions and after committing
+// Sensor Status. Infallible bounded gate update; clears the pending snapshot and
+// invalidates copied-but-not-admitted data on transitions. Repeated values are
+// idempotent. No SDK call or publication-period change. Already admitted sends
+// may finish after disable; enable requires a fresh reader handoff.
+void mqtt_manager_commit_hcsr04p_enabled(bool enabled);
 
 // LD2450 reader owner only, after generic availability/disabled-policy checks.
 // Atomically commit the publication gate/interval; never call the MQTT SDK.
@@ -114,7 +123,7 @@ esp_err_t mqtt_manager_publish_gy511(
 // LD2450 instead keeps draining UART, pausing telemetry and health updates.
 // Previously queued telemetry may still arrive afterward. Re-enable resets the
 // deadline by one retained period; an already enabled sensor keeps its deadline.
-// All four sensors start enabled with default intervals after each boot.
+// All five sensors start enabled with default intervals after each boot.
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
 bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
 

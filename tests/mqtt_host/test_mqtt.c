@@ -84,7 +84,7 @@ int xTaskCreate(void (*f)(void *), const char *n, unsigned s, void *a,
 {
     assert(s == 4096 && p == 3 && !a);
     if (!strcmp(n, "hcsr04p_reader")) {
-        assert(!h); distance_reader = f; return pdPASS;
+        assert(h); *h = (void *)2; distance_reader = f; return pdPASS;
     }
     assert(!strcmp(n, "mqtt_tx") && h);
     if (failure()) return 0;
@@ -436,8 +436,7 @@ int main(void)
     rejected("{}", "missing_or_invalid_sensor");
     rejected("{\"sensor\":\"future\",\"interval_ms\":5000}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\""));
-    rejected("{\"sensor\":\"hcsr04p\",\"interval_ms\":200}", "unsupported_sensor");
-    rejected("{\"sensor\":\"hcsr04p\",\"enabled\":false}", "unsupported_sensor");
+    // HC-SR04P is now supported; its parser/ACK coverage is in test_hcsr04p_config.
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":\"5000\"}", "missing_or_invalid_interval_ms");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":1999}", "integer from 2000 to 10000");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":10001}", "integer from 2000 to 10000");
@@ -644,6 +643,7 @@ int main(void)
     test_radar_telemetry();
     test_radar_config();
     test_hcsr04p_telemetry();
+    test_hcsr04p_config();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +

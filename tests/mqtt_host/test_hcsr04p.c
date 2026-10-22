@@ -16,6 +16,12 @@ void vTaskDelay(TickType_t ticks)
     clock_us += ticks * 1000LL;
     if (clock_us >= distance_reader_until) longjmp(distance_reader_idle, 1);
 }
+int xTaskNotifyWait(uint32_t entry, uint32_t exit, uint32_t *value, TickType_t wait)
+{
+    assert(!entry && exit == UINT32_MAX);
+    if (wait) vTaskDelay(wait);
+    return 0;
+}
 esp_err_t hcsr04p_sensor_init(void) { return ESP_OK; }
 esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *reading)
 {
@@ -275,10 +281,131 @@ static void test_hcsr04p_telemetry(void)
     event(MQTT_EVENT_CONNECTED);
     assert(!critical_depth && allocs == allocations);
 
-    // Phase 2 must not accidentally enable runtime configuration.
-    rejected("{\"sensor\":\"hcsr04p\",\"interval_ms\":1000}", "unsupported_sensor");
-    rejected("{\"sensor\":\"hcsr04p\",\"enabled\":false}", "unsupported_sensor");
+    // Runtime configuration is exercised separately below in Phase 3 tests.
     mqtt_manager_log_diagnostics();
     assert(stats->attempts == stats->publish_ok + stats->publish_failed + stats->offline + stats->stale + stats->invalid);
     puts("PASS: real HC-SR04P reader during blocked SDK, timeout/invalid handoff, sensor/transport health isolation");
+}
+
+static void distance_gate_during_format(void)
+{
+    mqtt_manager_commit_hcsr04p_enabled(false);
+    mqtt_manager_commit_hcsr04p_enabled(true);
+    assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us) == ESP_OK);
+}
+static void distance_disable_in_sdk(void)
+{
+    publish_hook = NULL;
+    mqtt_manager_commit_hcsr04p_enabled(false);
+}
+
+static void test_hcsr04p_config(void)
+{
+    const unsigned valid[] = {100, 101, 200, 500, 9999, 10000};
+    for (unsigned i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+        char payload[96]; mqtt_config_update_t update;
+        uint32_t ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
+        int64_t deadline = s_hcsr04p_next_publish_us;
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"hcsr04p\",\"interval_ms\":%u}", valid[i]);
+        json_command(payload);
+        assert(s_stats[TX_CONFIG_ACK].attempts == ack_attempts && s_hcsr04p_next_publish_us == deadline);
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_HCSR04P);
+        assert(update.operation == MQTT_CONFIG_INTERVAL && update.interval_ms == valid[i]);
+        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"hcsr04p\",\"status\":\"applied\",\"interval_ms\":%u}", valid[i]);
+        assert(!strcmp(last_payload, payload) && last_qos == 1 && !strcmp(last_topic, CONFIG_ACK_TOPIC));
+    }
+    for (unsigned enabled = 0; enabled < 2; ++enabled) {
+        char payload[96]; mqtt_config_update_t update;
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"hcsr04p\",\"enabled\":%s}", enabled ? "true" : "false");
+        json_command(payload);
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_HCSR04P);
+        assert(update.operation == MQTT_CONFIG_ENABLED && update.enabled == (bool)enabled);
+        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"hcsr04p\",\"status\":\"applied\",\"enabled\":%s}", enabled ? "true" : "false");
+        assert(!strcmp(last_payload, payload) && last_qos == 1);
+        assert(mqtt_manager_reject_config(&update, "sensor_unavailable") == ESP_OK); pump();
+        assert(strstr(last_payload, "sensor_unavailable") && strstr(last_payload, "\"enabled\":") && last_qos == 1);
+    }
+    const char *bad_numbers[] = {"99", "10001", "100.5", "-1", "1e999"};
+    for (unsigned i = 0; i < sizeof(bad_numbers) / sizeof(bad_numbers[0]); ++i) {
+        char payload[96];
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"hcsr04p\",\"interval_ms\":%s}", bad_numbers[i]);
+        rejected(payload, "integer from 100 to 10000");
+    }
+    rejected("{\"sensor\":\"hcsr04p\",\"interval_ms\":\"100\"}", "missing_or_invalid_interval_ms");
+    const char *bad_booleans[] = {"0", "1", "null", "\"true\"", "[]", "{}"};
+    for (unsigned i = 0; i < sizeof(bad_booleans) / sizeof(bad_booleans[0]); ++i) {
+        char payload[96];
+        snprintf(payload, sizeof(payload), "{\"sensor\":\"hcsr04p\",\"enabled\":%s}", bad_booleans[i]);
+        rejected(payload, "enabled must be a boolean");
+    }
+    rejected("{\"sensor\":\"hcsr04p\"}", "missing_configuration_operation");
+    rejected("{\"sensor\":\"hcsr04p\",\"enabled\":false,\"interval_ms\":500}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"hcsr04p\",\"enabled\":false,\"enabled\":true}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"hcsr04p\",\"interval_ms\":500,\"interval_ms\":100}", "ambiguous_configuration");
+    rejected("{\"sensor\":\"hcsr04p\",\"sensor\":\"dht22\",\"enabled\":true}", "missing_or_invalid_sensor");
+    const char *commands[] = {
+        "{\"sensor\":\"hcsr04p\",\"enabled\":false}", "{\"sensor\":\"hcsr04p\",\"interval_ms\":500}",
+        "{\"sensor\":\"hcsr04p\",\"enabled\":true}", "{\"sensor\":\"hcsr04p\",\"interval_ms\":10000}"
+    };
+    for (unsigned i = 0; i < 4; ++i) json_command(commands[i]);
+    json_command(commands[0]); pump(); assert(strstr(last_payload, "queue_full") && last_qos == 1);
+    for (unsigned i = 0; i < 4; ++i) {
+        mqtt_config_update_t update;
+        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_HCSR04P);
+        assert(update.operation == (i % 2 ? MQTT_CONFIG_INTERVAL : MQTT_CONFIG_ENABLED));
+        if (i % 2) assert(update.interval_ms == (i == 1 ? 500U : 10000U));
+        else assert(update.enabled == (i == 2));
+    }
+    int calls = enqueue_calls;
+    command(commands[0], strlen(commands[0]), strlen(commands[0]), 0, true); pump();
+    command(commands[0], strlen(commands[0]), strlen(commands[0]), 1, false); pump();
+    assert(enqueue_calls == calls && !uxQueueMessagesWaiting(s_config_queue));
+    command(commands[0], strlen(commands[0]) - 1, strlen(commands[0]), 0, false); pump();
+    assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
+    puts("PASS: HC-SR04P 100..10000 parser, Boolean/duplicate/ambiguous rejection, FIFO, QoS1 ACK and retained policy");
+
+    distance_due();
+    assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us) == ESP_OK);
+    int64_t deadline = s_hcsr04p_next_publish_us;
+    uint32_t epoch = s_hcsr04p_epoch;
+    tx_stats_t *stats = &s_stats[TX_HCSR04P];
+    uint32_t seq = stats->attempts;
+    mqtt_manager_commit_hcsr04p_enabled(true);
+    assert(s_hcsr04p.pending && s_hcsr04p_epoch == epoch && s_hcsr04p_next_publish_us == deadline);
+    mqtt_manager_commit_hcsr04p_enabled(false);
+    assert(!s_hcsr04p.pending && !s_hcsr04p_enabled && s_hcsr04p_epoch == epoch + 1);
+    assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us) == ESP_ERR_INVALID_STATE);
+    mqtt_manager_commit_hcsr04p_enabled(false);
+    assert(s_hcsr04p_epoch == epoch + 1 && s_hcsr04p_next_publish_us == deadline);
+    calls = publish_calls; clock_us += 10000000; pump();
+    assert(publish_calls == calls && stats->attempts == seq);
+    mqtt_manager_commit_hcsr04p_enabled(true);
+    distance_due(); pump(); assert(publish_calls == calls); // No pre-disable replay.
+    distance_due();
+    assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us) == ESP_OK);
+    uint32_t cancelled = stats->cancelled;
+    timer_hook = distance_gate_during_format; timer_hook_countdown = 2;
+    service_hcsr04p_snapshot();
+    assert(!timer_hook && publish_calls == calls && stats->cancelled == cancelled + 1 && s_hcsr04p.pending);
+    int64_t acquired = s_hcsr04p.acquired_us;
+    seq = stats->attempts + 1; distance_due(); pump(); check_distance_json(&distance_fixture, acquired, seq);
+    distance_due();
+    assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us) == ESP_OK);
+    calls = publish_calls; publish_hook = distance_disable_in_sdk; pump();
+    assert(publish_calls == calls + 1 && !s_hcsr04p_enabled && !s_hcsr04p.pending);
+    mqtt_manager_commit_hcsr04p_enabled(true);
+    distance_due(); pump(); assert(publish_calls == calls + 1);
+    // Slow acquisition cannot cause 1 Hz repeats or relax the 2 s freshness limit.
+    for (unsigned i = 0; i < 3; ++i) {
+        distance_due(); acquired = clock_us;
+        assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, acquired) == ESP_OK);
+        seq = stats->attempts + 1; pump(); check_distance_json(&distance_fixture, acquired, seq);
+        calls = publish_calls;
+        for (unsigned quiet = 0; quiet < 9; ++quiet) { distance_due(); pump(); }
+        assert(publish_calls == calls);
+    }
+    assert(stats->attempts == stats->publish_ok + stats->publish_failed + stats->offline + stats->stale + stats->invalid + stats->cancelled);
+    puts("PASS: HC-SR04P gate/epoch cancellation, idempotence, in-flight boundary, slow samples and fixed MQTT cadence");
 }

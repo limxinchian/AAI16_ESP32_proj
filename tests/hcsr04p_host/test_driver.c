@@ -16,6 +16,8 @@ static int64_t pretrigger_delay_us;
 static uint32_t resolution = 80000000, pulse_ticks = 80000, rise_ticks = 1234;
 static echo_event_t queued_event;
 static mcpwm_capture_event_callbacks_t callbacks;
+// Optional control-test hook at the real driver's armed, blocking ECHO wait.
+static void (*capture_wait_hook)(void);
 typedef enum { VALID, MISSING, RISE_ONLY, LATE, FALL_ONLY, DOUBLE_RISE } mode_t;
 static mode_t mode;
 static esp_err_t init_step(void) { return ++step == fail_step ? ESP_FAIL : ESP_OK; }
@@ -47,6 +49,7 @@ BaseType_t xQueueReceive(QueueHandle_t queue, void *out, TickType_t wait)
     }
     if (wait && !queued) {
         waits++;
+        if (capture_wait_hook) capture_wait_hook();
         int64_t wait_start = test_now_us;
         if (mode != MISSING) {
             test_now_us = s_last_trigger_us + 200;

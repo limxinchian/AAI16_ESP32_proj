@@ -57,6 +57,11 @@ for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_runt
                      "radar_cfg_task", "radar_cfg_uninitialized", "radar_cfg_flush", "radar_cfg_silence",
                      "radar_cfg_history", "radar_cfg_wrap", "radar_cfg_fragment", "radar_cfg_noise",
                      "ultra_healthy", "ultra_missing", "ultra_invalid", "ultra_resume",
-                     "ultra_init", "ultra_task", "ultra_wrap", "ultra_overrun"]
+                     "ultra_init", "ultra_task", "ultra_wrap", "ultra_overrun",
+                     "ultra_cfg_interval", "ultra_cfg_rounding", "ultra_cfg_shorten",
+                     "ultra_cfg_gate", "ultra_cfg_paused", "ultra_cfg_read",
+                     "ultra_cfg_burst", "ultra_cfg_preempt", "ultra_cfg_missing",
+                     "ultra_cfg_recovery", "ultra_cfg_init", "ultra_cfg_task",
+                     "ultra_cfg_uninitialized", "ultra_cfg_wrap"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

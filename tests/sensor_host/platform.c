@@ -36,7 +36,7 @@ void test_log(char level, const char *tag, const char *format, ...)
     assert(!strchr(test_last_log, '\n') && !strchr(test_last_log, '\033'));
     if (!strcmp(tag, "SENSOR")) {
         assert(strstr(test_last_log, " | DATA | ") || strstr(test_last_log, " | ERROR | ") ||
-               strstr(test_last_log, " | HEALTH | "));
+               strstr(test_last_log, " | HEALTH | ") || strstr(test_last_log, " | CONFIG | "));
     }
     strcpy(history[history_next++ % 64], test_last_log);
     test_last_level = level;

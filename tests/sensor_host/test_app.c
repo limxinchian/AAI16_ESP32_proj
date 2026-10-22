@@ -74,6 +74,7 @@ void hcsr04p_reader_start(void)
     sensor_status_configure(SENSOR_HCSR04P, "hcsr04p", true);
     sensor_status_record_init(SENSOR_HCSR04P, ESP_ERR_NO_MEM);
 }
+TaskHandle_t hcsr04p_reader_task_handle(void) { return NULL; }
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }
