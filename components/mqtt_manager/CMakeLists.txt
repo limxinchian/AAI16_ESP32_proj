@@ -11,5 +11,5 @@ idf_component_register(
         sensor_status
         ld2450_sensor
         hcsr04p_sensor
-    PRIV_REQUIRES esp_timer esp_hw_support
+    PRIV_REQUIRES esp_timer esp_hw_support mhz1911a_sensor
 )

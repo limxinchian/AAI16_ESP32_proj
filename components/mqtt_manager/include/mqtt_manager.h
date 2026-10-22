@@ -80,6 +80,32 @@ esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
 esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
                                               int64_t acquired_us);
 
+// MH-Z1911A reader only: call once per validated success, with read-completion
+// uptime. One latest sample, protected by the existing stats/snapshot spinlock;
+// no allocation, queue wait or SDK call. Rejects invalid ppm/timestamps and
+// repeated/out-of-order timestamps without replacing pending data.
+// The existing publisher consumes pending data after other telemetry/event work.
+// Publication follows the configured acquisition cycle (default 5000 ms).
+// QoS 0, retain=0; age >=2000 ms at SDK admission is stale. Offline/stale/failed
+// attempts are discarded, never retried. Pending samples can be replaced while
+// the publisher is busy/offline; reconnect replays no consumed history.
+// seq counts consumed attempts, including offline/stale/cancelled/SDK failures, starting
+// at 1 per boot and wrapping as uint32_t. Updates/replacements/deferrals and
+// invalid or duplicate handoffs do not advance it. uptime_ms = acquired_us/1000.
+// ESP_OK means snapshot acceptance only, not broker or subscriber delivery.
+// Disabled handoffs return ESP_ERR_INVALID_STATE.
+esp_err_t mqtt_manager_update_mhz1911a_snapshot(uint16_t co2_ppm, int64_t acquired_us);
+
+#define MHZ1911A_MIN_INTERVAL_MS 5000U
+#define MHZ1911A_MAX_INTERVAL_MS 60000U
+
+// Reader owner only, between reads: commit after every interval command and
+// enabled-state edge, before the applied ACK. Infallible bounded update clears
+// pending data and invalidates copied attempts not yet admitted to the SDK.
+// The reader resets its schedule; enable requires a fresh handoff. Repeated
+// enable values should not call this API. Already admitted sends may complete.
+void mqtt_manager_commit_mhz1911a_config(bool enabled);
+
 // HC-SR04P reader owner only, between complete acquisitions and after committing
 // Sensor Status. Infallible bounded gate update; clears the pending snapshot and
 // invalidates copied-but-not-admitted data on transitions. Repeated values are
@@ -123,7 +149,7 @@ esp_err_t mqtt_manager_publish_gy511(
 // LD2450 instead keeps draining UART, pausing telemetry and health updates.
 // Previously queued telemetry may still arrive afterward. Re-enable resets the
 // deadline by one retained period; an already enabled sensor keeps its deadline.
-// All five sensors start enabled with default intervals after each boot.
+// All six sensors start enabled with default intervals after each boot.
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
 bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
 

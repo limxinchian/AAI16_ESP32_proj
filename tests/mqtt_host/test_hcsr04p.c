@@ -12,6 +12,7 @@ const char *esp_err_to_name(esp_err_t error) { return error == ESP_OK ? "ESP_OK"
 void vTaskDelete(TaskHandle_t task) { assert(false); }
 void vTaskDelay(TickType_t ticks)
 {
+    if (reader_delay_hook) { reader_delay_hook(ticks); return; }
     assert(!critical_depth && ticks > 0 && ticks <= HCSR04P_SAMPLE_MS);
     clock_us += ticks * 1000LL;
     if (clock_us >= distance_reader_until) longjmp(distance_reader_idle, 1);

@@ -78,17 +78,23 @@ void sensor_status_record_unavailable(sensor_id_t id, sensor_error_stage_t stage
     portEXIT_CRITICAL(&s_lock);
 }
 
-void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us)
+static void record_acquisition(sensor_id_t id, esp_err_t error, int64_t completed_us,
+                               uint32_t unavailable_after)
 {
     if (!valid_id(id)) return;
     bool emit = false;
     sensor_status_t snapshot = {0};
     portENTER_CRITICAL(&s_lock);
     sensor_status_t *status = &s_sensors[id];
-    if (can_sample(status)) {
+    bool probe = unavailable_after > 0;
+    bool probe_allowed = probe && status->name != NULL &&
+        (status->state == SENSOR_UNINITIALIZED ||
+         (status->state == SENSOR_UNAVAILABLE && status->error_stage == SENSOR_STAGE_READ));
+    if (can_sample(status) || probe_allowed) {
         esp_err_t previous_error = status->last_error;
         status->last_error = error;
         if (error == ESP_OK) {
+            if (probe) status->initialized = true;
             status->state = SENSOR_READY;
             status->error_stage = SENSOR_STAGE_NONE;
             status->read_successes++;
@@ -99,6 +105,8 @@ void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t complete
             status->error_stage = SENSOR_STAGE_READ;
             status->read_failures++;
             status->consecutive_failures++;
+            if (probe && (!status->initialized || status->consecutive_failures >= unavailable_after))
+                status->state = SENSOR_UNAVAILABLE;
         }
         // First failure and first recovery are immediate. Repeated identical
         // errors are silent; rapid alternation is bounded to one warning and
@@ -119,14 +127,31 @@ void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t complete
     // ESP-IDF serializes each complete log call; never format or log in a
     // critical section. This API is task-only and called by each sensor owner.
     if (emit && error != ESP_OK) {
-        ESP_LOGW("SENSOR", "%-7.16s | ERROR | state=DEGRADED error=%s failed_total=%" PRIu32
+        ESP_LOGW("SENSOR", "%-7.16s | ERROR | state=%s error=%s failed_total=%" PRIu32
                  " consecutive=%" PRIu32,
-                 snapshot.name, esp_err_to_name(error), snapshot.read_failures,
+                 snapshot.name, sensor_status_state_name(snapshot.state), esp_err_to_name(error), snapshot.read_failures,
                  snapshot.consecutive_failures);
     } else if (emit) {
         ESP_LOGI("SENSOR", "%-7.16s | HEALTH | recovery=READY ok_total=%" PRIu32 " failed_total=%" PRIu32,
                  snapshot.name, snapshot.read_successes, snapshot.read_failures);
     }
+}
+
+void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us)
+{
+    record_acquisition(id, error, completed_us, 0);
+}
+
+void sensor_status_record_probe(sensor_id_t id, esp_err_t error, int64_t completed_us,
+                                uint32_t unavailable_after)
+{
+    if (unavailable_after) record_acquisition(id, error, completed_us, unavailable_after);
+}
+
+const char *sensor_status_state_name(sensor_state_t state)
+{
+    static const char *const names[] = {"DISABLED", "UNINITIALIZED", "READY", "DEGRADED", "UNAVAILABLE"};
+    return (unsigned)state < sizeof(names) / sizeof(*names) ? names[state] : "UNKNOWN";
 }
 
 esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled)
@@ -140,6 +165,22 @@ esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled)
         // particular, re-enabling must not erase a previous read failure.
         status->state = !enabled ? SENSOR_DISABLED :
             (status->error_stage == SENSOR_STAGE_READ ? SENSOR_DEGRADED : SENSOR_READY);
+        result = ESP_OK;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return result;
+}
+
+esp_err_t sensor_status_set_probe_enabled(sensor_id_t id, bool enabled)
+{
+    if (!valid_id(id)) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_lock);
+    sensor_status_t *status = &s_sensors[id];
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (status->name != NULL && (status->error_stage == SENSOR_STAGE_NONE ||
+                                 status->error_stage == SENSOR_STAGE_READ)) {
+        if (!enabled) status->state = SENSOR_DISABLED;
+        else if (status->state == SENSOR_DISABLED) status->state = SENSOR_UNINITIALIZED;
         result = ESP_OK;
     }
     portEXIT_CRITICAL(&s_lock);

@@ -12,6 +12,7 @@
 #include "rc522_reader.h"
 #include "ld2450_reader.h"
 #include "hcsr04p_reader.h"
+#include "mhz1911a_reader.h"
 #include "sensor_config.h"
 
 #include "esp_err.h"
@@ -236,6 +237,8 @@ void app_main(void)
     ld2450_reader_start();
     hcsr04p_reader_start();
 
+    mhz1911a_reader_start();
+
     vTaskDelay(pdMS_TO_TICKS(2000));
 
     uint32_t total = 0;
@@ -266,11 +269,13 @@ void app_main(void)
              mqtt_manager_peek_config_update(&update); ++commands)
         {
             if (update.sensor == SENSOR_GY511 || update.sensor == SENSOR_RC522 ||
-                update.sensor == SENSOR_LD2450 || update.sensor == SENSOR_HCSR04P) {
+                update.sensor == SENSOR_LD2450 || update.sensor == SENSOR_HCSR04P ||
+                update.sensor == SENSOR_MHZ1911A) {
                 TaskHandle_t reader = update.sensor == SENSOR_GY511 ?
                     s_gy511_task : update.sensor == SENSOR_RC522 ?
                     rc522_reader_task_handle() : update.sensor == SENSOR_LD2450 ?
-                    ld2450_reader_task_handle() : hcsr04p_reader_task_handle();
+                    ld2450_reader_task_handle() : update.sensor == SENSOR_HCSR04P ?
+                    hcsr04p_reader_task_handle() : mhz1911a_reader_task_handle();
                 if (reader == NULL) {
                     mqtt_manager_take_config_update(&update);
                     (void)mqtt_manager_reject_config(&update, "sensor_unavailable");

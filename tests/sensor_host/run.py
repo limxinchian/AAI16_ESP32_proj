@@ -29,7 +29,7 @@ for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "freertos/FreeRTOS.h",
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output)]
 for component in ["sensor_status", "dht22_moisture_sensor", "gy511_sensor",
-                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager", "ld2450_sensor", "hcsr04p_sensor"]:
+                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager", "ld2450_sensor", "hcsr04p_sensor", "mhz1911a_sensor"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_runtime"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
@@ -62,6 +62,10 @@ for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_runt
                      "ultra_cfg_gate", "ultra_cfg_paused", "ultra_cfg_read",
                      "ultra_cfg_burst", "ultra_cfg_preempt", "ultra_cfg_missing",
                      "ultra_cfg_recovery", "ultra_cfg_init", "ultra_cfg_task",
-                     "ultra_cfg_uninitialized", "ultra_cfg_wrap"]
+                     "ultra_cfg_uninitialized", "ultra_cfg_wrap",
+                     "co2_healthy", "co2_missing", "co2_recovery", "co2_init", "co2_task", "co2_slow",
+                     "co2_config_interval", "co2_config_max", "co2_config_idle", "co2_config_inflight",
+                     "co2_config_burst", "co2_config_inflight_success", "co2_config_warmup", "co2_config_warmup_end", "co2_config_paused",
+                     "co2_config_recovery", "co2_config_init", "co2_config_task", "co2_config_preempt"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

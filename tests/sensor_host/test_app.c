@@ -75,6 +75,12 @@ void hcsr04p_reader_start(void)
     sensor_status_record_init(SENSOR_HCSR04P, ESP_ERR_NO_MEM);
 }
 TaskHandle_t hcsr04p_reader_task_handle(void) { return NULL; }
+TaskHandle_t mhz1911a_reader_task_handle(void) { return NULL; }
+void mhz1911a_reader_start(void)
+{
+    sensor_status_configure(SENSOR_MHZ1911A, "mhz1911a", true);
+    sensor_status_record_init(SENSOR_MHZ1911A, ESP_ERR_NO_MEM);
+}
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }
@@ -197,13 +203,13 @@ int main(int argc, char **argv)
             assert(!dht_reads && !dht_publications && !applied_acks && !test_config_logs);
             assert(dht.state == SENSOR_UNAVAILABLE && dht.error_stage == SENSOR_STAGE_INIT);
             assert(!dht.initialized && !dht.read_failures && dht.last_success_us == -1);
-            assert(diagnostics_calls == 1230 && test_summary_logs == 33);
+            assert(diagnostics_calls == 1230 && test_summary_logs == 39);
             assert(commands_taken == (command_flood ? 4 * diagnostics_calls : 1));
             assert(rejected_acks == commands_taken);
         } else if (dht_missing) {
             assert(dht_reads == 62 && !dht_publications && diagnostics_calls == dht_reads);
             assert(dht.state == SENSOR_DEGRADED && dht.read_failures == 62 && dht.consecutive_failures == 62);
-            assert(test_error_logs == 1 && test_recovery_logs == 0 && test_summary_logs == 33);
+            assert(test_error_logs == 1 && test_recovery_logs == 0 && test_summary_logs == 39);
             assert(test_logs_contain("invalid_total=61") && test_logs_contain("jitter_violations_total=0"));
             assert(!test_logs_contain("dht22   | DATA |"));
             for (unsigned i = 0; i < dht_reads; ++i) assert(dht_times[i] == 2000000 + i * 2000000LL);
