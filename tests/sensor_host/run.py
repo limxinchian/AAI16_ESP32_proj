@@ -29,9 +29,9 @@ for name in ["esp_err.h", "esp_log.h", "esp_timer.h", "freertos/FreeRTOS.h",
 flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
          "-I", str(test), "-I", str(output)]
 for component in ["sensor_status", "dht22_moisture_sensor", "gy511_sensor",
-                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager", "ld2450_sensor"]:
+                  "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager", "ld2450_sensor", "hcsr04p_sensor"]:
     flags += ["-I", str(repo / "components" / component / "include")]
-for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
+for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_runtime"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(test / "platform.c")]
     if name != "test_gy511":
@@ -39,7 +39,7 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
     threading_flags = ["-pthread"] if name == "test_runtime" else []
     subprocess.run(flags + threading_flags + sources + ["-lm", "-o", str(binary)], check=True)
     scenarios = (["healthy", "dht_init", "gy_init", "both_init", "bus_init", "gy_task",
-                  "dht_reads", "gy_reads", "gy_overrun", "healthy_config", "healthy_flood",
+                  "dht_reads", "dht_missing", "gy_reads", "gy_overrun", "healthy_config", "healthy_flood",
                   "unavailable_flood"] if name == "test_app" else [None])
     if name == "test_runtime":
         scenarios = ["default", "changes", "mixed", "burst", "shorten", "rounding",
@@ -55,6 +55,8 @@ for name in ["test_status", "test_app", "test_gy511", "test_runtime"]:
                      "radar_init", "radar_task", "radar_cfg_interval", "radar_cfg_gate",
                      "radar_cfg_burst", "radar_cfg_disabled", "radar_cfg_missing", "radar_cfg_init",
                      "radar_cfg_task", "radar_cfg_uninitialized", "radar_cfg_flush", "radar_cfg_silence",
-                     "radar_cfg_history", "radar_cfg_wrap", "radar_cfg_fragment", "radar_cfg_noise"]
+                     "radar_cfg_history", "radar_cfg_wrap", "radar_cfg_fragment", "radar_cfg_noise",
+                     "ultra_healthy", "ultra_missing", "ultra_invalid", "ultra_resume",
+                     "ultra_init", "ultra_task", "ultra_wrap", "ultra_overrun"]
     for scenario in scenarios:
         subprocess.run([str(binary)] + ([scenario] if scenario else []), check=True, timeout=15)

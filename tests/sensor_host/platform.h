@@ -46,11 +46,15 @@ unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task);
 extern int64_t test_now_us;
 extern unsigned test_log_calls;
 extern char test_last_log[512];
+extern unsigned test_error_logs, test_recovery_logs, test_summary_logs, test_config_logs;
+extern char test_last_level;
+bool test_logs_contain(const char *text);
 int64_t esp_timer_get_time(void);
-void test_log(const char *tag, const char *format, ...);
-#define ESP_LOGI test_log
-#define ESP_LOGE test_log
-#define ESP_LOGW test_log
+void test_log(char level, const char *tag, const char *format, ...)
+    __attribute__((format(printf, 3, 4)));
+#define ESP_LOGI(tag, ...) test_log('I', tag, __VA_ARGS__)
+#define ESP_LOGE(tag, ...) test_log('E', tag, __VA_ARGS__)
+#define ESP_LOGW(tag, ...) test_log('W', tag, __VA_ARGS__)
 
 typedef int gpio_num_t;
 #define GPIO_NUM_6 6

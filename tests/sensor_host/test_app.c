@@ -3,27 +3,20 @@
 #include <setjmp.h>
 #include <string.h>
 
-static unsigned applied_logs;
-static int test_printf(const char *format, ...)
-{
-    if (strstr(format, "interval applied")) applied_logs++;
-    return 0;
-}
-// Compile the real application, replacing only platform/driver/network APIs.
-#define printf test_printf
+// Compile the real application against the shared log-capturing platform.
 #include "../../main/main.c"
-#undef printf
 
 static jmp_buf stopped;
 static int64_t stop_at_us = 12000000;
 static esp_err_t dht_init_error, gy_init_error, bus_init_error;
 static bool task_failure, command_flood, read_failures, gy_overrun;
+static bool dht_missing;
 static unsigned wifi_starts, mqtt_starts, bus_starts, scans, gy_inits, gy_deinits;
 static unsigned dht_inits, dht_reads, gy_reads, dht_publications, gy_publications;
 static unsigned diagnostics_calls, commands_taken, applied_acks, rejected_acks;
 static uint32_t ack_interval;
 static int64_t command_at_us = -1;
-static int64_t dht_times[16], gy_times[16];
+static int64_t dht_times[128], gy_times[16];
 static void (*created_reader)(void *);
 
 static void advance_to(int64_t time_us)
@@ -76,6 +69,11 @@ void ld2450_reader_start(void)
     sensor_status_record_init(SENSOR_LD2450, ESP_FAIL);
 }
 TaskHandle_t ld2450_reader_task_handle(void) { return NULL; }
+void hcsr04p_reader_start(void)
+{
+    sensor_status_configure(SENSOR_HCSR04P, "hcsr04p", true);
+    sensor_status_record_init(SENSOR_HCSR04P, ESP_ERR_NO_MEM);
+}
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }
@@ -84,8 +82,9 @@ esp_err_t gy511_sensor_deinit(void) { gy_deinits++; return ESP_OK; }
 esp_err_t dht22_init(gpio_num_t pin) { assert(pin == GPIO_NUM_6); dht_inits++; return dht_init_error; }
 esp_err_t dht22_read(dht22_data_t *data)
 {
-    assert(dht_init_error == ESP_OK && dht_reads < 16);
+    assert(dht_init_error == ESP_OK && dht_reads < 128);
     dht_times[dht_reads++] = test_now_us;
+    if (dht_missing) return ESP_ERR_INVALID_RESPONSE;
     if (read_failures && dht_reads <= 2) return ESP_ERR_INVALID_CRC;
     data->temperature_c = 25; data->humidity_pct = 50;
     return ESP_OK;
@@ -150,6 +149,7 @@ int main(int argc, char **argv)
     if (!strcmp(scenario, "dht_reads") || !strcmp(scenario, "gy_reads")) read_failures = true;
     if (!strcmp(scenario, "healthy_config")) { command_at_us = 2500000; stop_at_us = 13000000; }
     if (!strcmp(scenario, "gy_overrun")) gy_overrun = true;
+    if (!strcmp(scenario, "dht_missing")) { dht_missing = true; stop_at_us = 125000000; }
 
     if (worker_only) {
         sensor_status_configure(SENSOR_GY511, "gy511", true);
@@ -179,6 +179,7 @@ int main(int argc, char **argv)
         assert(wifi_starts == 1 && mqtt_starts == 1 && bus_starts == 1 && dht_inits == 1);
         sensor_status_t rc522;
         assert(sensor_status_get(SENSOR_RC522, &rc522) && rc522.state == SENSOR_UNAVAILABLE);
+        assert(sensor_status_get(SENSOR_HCSR04P, &rc522) && rc522.state == SENSOR_UNAVAILABLE);
         assert(sensor_status_get(SENSOR_DHT22, &dht));
         assert(gy_inits == (bus_init_error == ESP_OK ? 1U : 0U));
         assert(scans == gy_inits);
@@ -192,19 +193,26 @@ int main(int argc, char **argv)
             assert(created_reader == gy511_reader_task && gy.state == SENSOR_READY);
         }
         if (dht_init_error) {
-            assert(!dht_reads && !dht_publications && !applied_acks && !applied_logs);
+            assert(!dht_reads && !dht_publications && !applied_acks && !test_config_logs);
             assert(dht.state == SENSOR_UNAVAILABLE && dht.error_stage == SENSOR_STAGE_INIT);
             assert(!dht.initialized && !dht.read_failures && dht.last_success_us == -1);
-            assert(diagnostics_calls == 1230 && test_log_calls == 12);
+            assert(diagnostics_calls == 1230 && test_summary_logs == 33);
             assert(commands_taken == (command_flood ? 4 * diagnostics_calls : 1));
             assert(rejected_acks == commands_taken);
+        } else if (dht_missing) {
+            assert(dht_reads == 62 && !dht_publications && diagnostics_calls == dht_reads);
+            assert(dht.state == SENSOR_DEGRADED && dht.read_failures == 62 && dht.consecutive_failures == 62);
+            assert(test_error_logs == 1 && test_recovery_logs == 0 && test_summary_logs == 33);
+            assert(test_logs_contain("invalid_total=61") && test_logs_contain("jitter_violations_total=0"));
+            assert(!test_logs_contain("dht22   | DATA |"));
+            for (unsigned i = 0; i < dht_reads; ++i) assert(dht_times[i] == 2000000 + i * 2000000LL);
         } else {
             assert(dht.state == SENSOR_READY && dht.error_stage == SENSOR_STAGE_NONE);
             assert(diagnostics_calls == dht_reads && dht.read_successes == dht_publications);
             assert(dht.read_failures == (read_failures ? 2U : 0U));
             assert(dht.consecutive_failures == 0 && !rejected_acks);
             if (command_at_us >= 0) {
-                assert(applied_acks == 1 && ack_interval == 5000 && applied_logs == 1);
+                assert(applied_acks == 1 && ack_interval == 5000 && test_config_logs == 1);
                 assert(dht_reads == 3 && dht_times[0] == 2000000 &&
                        dht_times[1] == 7000000 && dht_times[2] == 12000000);
             } else if (command_flood) {

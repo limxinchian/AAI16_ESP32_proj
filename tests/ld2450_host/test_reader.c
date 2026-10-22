@@ -94,18 +94,18 @@ int main(int argc,char **argv)
     } else if (is("missing") || is("noise") || is("cleanup")) {
         assert(inits==1 && deinits==1 && deleted==1 && s.state==SENSOR_UNAVAILABLE && !s.initialized);
         assert(test_now_us>=5000000 && test_now_us<5110000 && s.last_success_us==-1 && !s.read_successes);
-        assert(s.last_error==ESP_ERR_TIMEOUT && test_log_calls<=5);
+        assert(s.last_error==ESP_ERR_TIMEOUT && test_log_calls<=7);
     } else {
         assert(inits==1 && !deinits && !deleted && receives==delays && receives>200);
         assert(s.initialized && s.read_successes==valid && s.last_success_us>=0);
         if (is("silence") || is("uart_errors")) {
             assert(s.state==SENSOR_DEGRADED && s.read_failures>0 && s.last_success_us<1200000);
-            assert(test_log_calls<12); // Repeated errors do not flood serial.
+            assert(test_log_calls<16); // Repeated errors do not flood serial.
         } else {
             assert(s.state==SENSOR_READY && !s.consecutive_failures);
             assert(s.read_failures==(is("resync")?valid:is("resume")?1U:0U));
-            if (is("changes")) assert(test_log_calls<50); // 10 Hz changes coalesced <=1 group/s.
-            else assert(test_log_calls<(is("resync")?16U:12U)); // Extra warnings only on resync.
+            if (is("changes")) assert(test_log_calls<54); // 10 Hz changes coalesced <=1 group/s.
+            else assert(test_log_calls<(is("resync")?20U:17U)); // Extra warnings only on resync.
         }
     }
     assert(snapshots == valid); // Init/noise/idle receive failures create no data.

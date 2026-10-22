@@ -426,6 +426,8 @@ int main(void)
     rejected("{}", "missing_or_invalid_sensor");
     rejected("{\"sensor\":\"future\",\"interval_ms\":5000}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\""));
+    rejected("{\"sensor\":\"hcsr04p\",\"interval_ms\":200}", "unsupported_sensor");
+    rejected("{\"sensor\":\"hcsr04p\",\"enabled\":false}", "unsupported_sensor");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":\"5000\"}", "missing_or_invalid_interval_ms");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":1999}", "integer from 2000 to 10000");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":10001}", "integer from 2000 to 10000");

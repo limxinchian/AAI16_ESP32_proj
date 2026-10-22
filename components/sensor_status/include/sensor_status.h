@@ -10,6 +10,7 @@ typedef enum {
     SENSOR_GY511,
     SENSOR_RC522,
     SENSOR_LD2450,
+    SENSOR_HCSR04P,
     SENSOR_STATUS_CAPACITY = 8
 } sensor_id_t;
 
@@ -43,11 +44,13 @@ typedef struct {
 
 // Configure once at startup, before the sensor's worker starts. Name must have
 // static lifetime. Disabled slots are reported separately from failed sensors.
-// This only records status: it does not initialize, stop, or recover hardware.
+// Status/logging only: this does not initialize, stop, or recover hardware.
 esp_err_t sensor_status_configure(sensor_id_t id, const char *name, bool enabled);
 void sensor_status_record_init(sensor_id_t id, esp_err_t error);
 void sensor_status_record_unavailable(sensor_id_t id, sensor_error_stage_t stage,
                                       esp_err_t error);
+// Task-only: also logs bounded failure/recovery transitions outside the lock.
+// The first error/recovery pair is immediate; flapping is coalesced (10 s).
 void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us);
 // Call only from the acquisition owner, between reads. This records the gate;
 // the owner must stop sampling and reset its deadline on a disabled -> enabled
@@ -57,6 +60,6 @@ esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled);
 bool sensor_status_can_sample(sensor_id_t id);
 bool sensor_status_get(sensor_id_t id, sensor_status_t *out);
 
-// Call only from app_main, after any due acquisition. At most eight lines per
-// 60 seconds, no per-failure logging, no MQTT/driver calls, and no dynamic memory.
+// Call only from app_main, after any due acquisition. Header + two lines per
+// configured sensor per 60 s, no MQTT/driver calls, and no dynamic memory.
 void sensor_status_log_summary(void);

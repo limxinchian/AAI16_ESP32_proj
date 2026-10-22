@@ -81,8 +81,6 @@
 #define DHT22_RMT_SYMBOLS 64
 #define DHT22_TIMEOUT_MS 100
 
-static const char *TAG = "DHT22";
-
 static gpio_num_t s_gpio = (gpio_num_t)-1;
 static rmt_channel_handle_t s_rx = NULL;
 static SemaphoreHandle_t s_done = NULL;
@@ -165,7 +163,7 @@ esp_err_t dht22_init(gpio_num_t gpio)
     s_gpio = gpio;
 
 
-    ESP_LOGI(TAG, "DHT22 driver ready on GPIO%d",
+    ESP_LOGI("SENSOR", "dht22   | HEALTH | DHT22 driver ready on GPIO%d",
              (int)gpio);
     return ESP_OK;
 
@@ -319,7 +317,9 @@ esp_err_t dht22_read(dht22_data_t *data)
     err = decode_data(data);
 
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Read failed: %s, symbols=%u",
+        // Read errors/recovery are logged once by the status registry. Raw
+        // decoder evidence remains available at debug level, outside the ISR.
+        ESP_LOGD("SENSOR", "dht22   | ERROR | decode=%s symbols=%u",
                  esp_err_to_name(err),
                  (unsigned)s_symbol_count);
     }
