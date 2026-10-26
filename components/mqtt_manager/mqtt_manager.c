@@ -1,5 +1,6 @@
 
 #include "mqtt_manager.h"
+#include "mhz1911a_sensor.h"
 #include "mqtt_credentials.h"
 
 #include <stdbool.h>
@@ -31,6 +32,8 @@
 #define GY511_DATA_TOPIC "aai16/sensors/gy511/data"
 #define RC522_EVENT_TOPIC "aai16/sensors/rc522/event"
 #define LD2450_DATA_TOPIC "aai16/sensors/ld2450/data"
+#define HCSR04P_DATA_TOPIC "aai16/sensors/hcsr04p/data"
+#define MHZ1911A_DATA_TOPIC "aai16/sensors/mhz1911a/data"
 #define BME280_DATA_TOPIC "aai16/sensors/bme280/data"
 #define MAX6675_DATA_TOPIC "aai16/sensors/max6675/data"
 
@@ -44,6 +47,13 @@
 #define LD2450_PAYLOAD_SIZE 512
 #define LD2450_DEFAULT_INTERVAL_MS 1000
 #define LD2450_MAX_AGE_US 2000000LL
+#define HCSR04P_PAYLOAD_SIZE 160
+#define HCSR04P_PUBLISH_INTERVAL_US 1000000LL
+#define HCSR04P_MAX_AGE_US (TELEMETRY_MAX_AGE_MS * 1000LL)
+_Static_assert(HCSR04P_PAYLOAD_SIZE <= TX_PAYLOAD_SIZE, "Distance payload exceeds telemetry capacity");
+#define MHZ1911A_PAYLOAD_SIZE 128
+#define MHZ1911A_MAX_AGE_US (TELEMETRY_MAX_AGE_MS * 1000LL)
+_Static_assert(MHZ1911A_PAYLOAD_SIZE <= TX_PAYLOAD_SIZE, "CO2 payload exceeds telemetry capacity");
 // Keep the original 4096-byte allowance available to configuration ACKs/control
 // traffic. Events may occupy at most an additional 1024 serialized bytes.
 #define ACK_OUTBOX_RESERVE_BYTES 4096
@@ -74,6 +84,9 @@ static const config_rule_t s_config_rules[] = {
     // Publication period only: at most two replaceable radar samples/second.
     // UART acquisition and the 2 s freshness limit remain independent.
     {SENSOR_LD2450, "ld2450", 500, 10000},
+    // Actual acquisition period; MQTT stays at its independent 1000 ms cadence.
+    {SENSOR_HCSR04P, "hcsr04p", HCSR04P_MIN_INTERVAL_MS, HCSR04P_MAX_INTERVAL_MS},
+    {SENSOR_MHZ1911A, "mhz1911a", MHZ1911A_MIN_INTERVAL_MS, MHZ1911A_MAX_INTERVAL_MS},
     // Forced-mode conversion takes ~8 ms; the room-climate signal is slow, so
     // 500 ms is a generous floor and 1000 ms is the reader's default.
     {SENSOR_BME280, "bme280", 500, 10000},
@@ -115,6 +128,8 @@ typedef enum {
     TX_CONFIG_ACK,
     TX_RC522_EVENT,
     TX_LD2450,
+    TX_HCSR04P,
+    TX_MHZ1911A,
     TX_BME280,
     TX_MAX6675,
     TX_KIND_COUNT
@@ -166,6 +181,32 @@ static bool s_radar_enabled = true;
 static uint32_t s_radar_interval_ms = LD2450_DEFAULT_INTERVAL_MS, s_radar_epoch;
 static int64_t s_radar_next_publish_us;
 static int64_t s_radar_next_failure_log_us; // Publisher only.
+
+// Same bounded handoff as radar. Snapshot and counters use s_stats_lock;
+// only the existing publisher owns the fixed publication deadline.
+static struct {
+    hcsr04p_reading_t reading;
+    int64_t acquired_us;
+    bool pending;
+} s_hcsr04p;
+static uint32_t s_hcsr04p_updates, s_hcsr04p_coalesced, s_hcsr04p_invalid, s_hcsr04p_deferred;
+static int64_t s_hcsr04p_next_publish_us, s_hcsr04p_next_failure_log_us;
+static bool s_hcsr04p_enabled = true; // Gate and epoch protected by s_stats_lock.
+static uint32_t s_hcsr04p_epoch;
+
+// Latest CO2 sample, with the same lock/ownership as the other mailboxes.
+// The producer's configured acquisition cadence supplies publication cadence.
+static struct {
+    uint16_t co2_ppm;
+    int64_t acquired_us;
+    bool pending;
+} s_mhz1911a;
+static int64_t s_mhz1911a_last_update_us = -1; // Guard also covers already consumed samples.
+static uint32_t s_mhz1911a_updates, s_mhz1911a_coalesced, s_mhz1911a_invalid;
+static uint32_t s_mhz1911a_nonnew, s_mhz1911a_deferred;
+static int64_t s_mhz1911a_next_failure_log_us; // Publisher only.
+static bool s_mhz1911a_enabled = true; // Gate/epoch share the snapshot lock.
+static uint32_t s_mhz1911a_epoch;
 
 // Only small counter operations occur under this spinlock. Never call MQTT,
 // FreeRTOS queues or logging while holding it (MQTT callbacks hold an SDK lock).
@@ -429,11 +470,250 @@ static void service_radar_snapshot(void)
     }
 }
 
+esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
+                                              int64_t acquired_us)
+{
+    // The driver validates pulse/range before handoff. Also bound this API's
+    // inputs so non-finite numbers or invalid timestamps cannot reach JSON.
+    if (reading == NULL || !isfinite(reading->distance_cm) || !isfinite(reading->echo_us) ||
+        reading->distance_cm < HCSR04P_MIN_CM || reading->distance_cm > HCSR04P_MAX_CM ||
+        reading->echo_us <= 0 || reading->echo_us > HCSR04P_ECHO_TIMEOUT_MS * 1000 ||
+        acquired_us < 0 || acquired_us > esp_timer_get_time()) {
+        count_event(&s_hcsr04p_invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_stats_lock);
+    if (!s_hcsr04p_enabled) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    ++s_hcsr04p_updates;
+    if (s_hcsr04p.pending) ++s_hcsr04p_coalesced;
+    s_hcsr04p.reading = *reading;
+    s_hcsr04p.acquired_us = acquired_us;
+    s_hcsr04p.pending = true;
+    portEXIT_CRITICAL(&s_stats_lock);
+    return ESP_OK;
+}
+
+void mqtt_manager_commit_hcsr04p_enabled(bool enabled)
+{
+    portENTER_CRITICAL(&s_stats_lock);
+    if (s_hcsr04p_enabled != enabled) {
+        s_hcsr04p_enabled = enabled;
+        s_hcsr04p.pending = false;
+        ++s_hcsr04p_epoch;
+    }
+    portEXIT_CRITICAL(&s_stats_lock);
+}
+
+static int format_hcsr04p(char *payload, size_t capacity, const hcsr04p_reading_t *reading,
+                         int64_t acquired_us, uint32_t seq)
+{
+    int len = snprintf(payload, capacity,
+        "{\"sensor\":\"hcsr04p\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
+        ",\"uptime_ms\":%" PRId64 ",\"distance_cm\":%.1f,\"echo_us\":%.1f}",
+        s_boot_id, seq, acquired_us / 1000, reading->distance_cm, reading->echo_us);
+    return len < 0 || (size_t)len >= capacity ? -1 : len;
+}
+
+// Publisher task only. Slow SDK calls hold a local copy, never the mailbox lock.
+static void service_hcsr04p_snapshot(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (now < s_hcsr04p_next_publish_us) return;
+    s_hcsr04p_next_publish_us = now + HCSR04P_PUBLISH_INTERVAL_US;
+    // Preserve ACK/telemetry slots, event priority and all QoS 1 outbox capacity.
+    bool busy = (s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue)) ||
+                (s_event_queue != NULL && uxQueueMessagesWaiting(s_event_queue));
+    hcsr04p_reading_t reading;
+    int64_t acquired_us;
+    uint32_t epoch;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (!s_hcsr04p_enabled) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
+    if (busy) {
+        if (s_hcsr04p.pending) ++s_hcsr04p_deferred;
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
+    bool pending = s_hcsr04p.pending;
+    epoch = s_hcsr04p_epoch;
+    reading = s_hcsr04p.reading;
+    acquired_us = s_hcsr04p.acquired_us;
+    s_hcsr04p.pending = false;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!pending) return;
+    tx_stats_t *stats = &s_stats[TX_HCSR04P];
+    uint32_t seq = begin_attempt(TX_HCSR04P);
+    if (now - acquired_us >= HCSR04P_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    char payload[HCSR04P_PAYLOAD_SIZE];
+    int len = format_hcsr04p(payload, sizeof(payload), &reading, acquired_us, seq);
+    if (len < 0) {
+        count_event(&stats->invalid); // Serialization failure, separate from invalid updates.
+        return;
+    }
+    // Serialization/preemption can age data; check again at SDK admission.
+    int64_t start_us = esp_timer_get_time();
+    portENTER_CRITICAL(&s_stats_lock);
+    bool admitted = s_hcsr04p_enabled && epoch == s_hcsr04p_epoch;
+    if (!admitted) ++stats->cancelled;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!admitted) return;
+    if (start_us - acquired_us >= HCSR04P_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    int result = esp_mqtt_client_publish(s_client, HCSR04P_DATA_TOPIC, payload, len, 0, 0);
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;
+    if (result >= 0) ++stats->publish_ok; // SDK success, never a broker/subscriber receipt.
+    else ++stats->publish_failed;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (result < 0 && esp_timer_get_time() >= s_hcsr04p_next_failure_log_us) {
+        ESP_LOGW(TAG, "%s publish failed (result=%d); see drop counters", HCSR04P_DATA_TOPIC, result);
+        s_hcsr04p_next_failure_log_us = esp_timer_get_time() + 10000000LL;
+    }
+}
+
+esp_err_t mqtt_manager_update_mhz1911a_snapshot(uint16_t co2_ppm, int64_t acquired_us)
+{
+    if (co2_ppm < MHZ1911A_MIN_PPM || co2_ppm > MHZ1911A_MAX_PPM ||
+        acquired_us < 0 || acquired_us > esp_timer_get_time()) {
+        count_event(&s_mhz1911a_invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_stats_lock);
+    if (!s_mhz1911a_enabled) {
+        portEXIT_CRITICAL(&s_stats_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (acquired_us <= s_mhz1911a_last_update_us) {
+        ++s_mhz1911a_nonnew;
+        portEXIT_CRITICAL(&s_stats_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    ++s_mhz1911a_updates;
+    if (s_mhz1911a.pending) ++s_mhz1911a_coalesced;
+    s_mhz1911a.co2_ppm = co2_ppm;
+    s_mhz1911a.acquired_us = acquired_us;
+    s_mhz1911a.pending = true;
+    s_mhz1911a_last_update_us = acquired_us;
+    portEXIT_CRITICAL(&s_stats_lock);
+    return ESP_OK;
+}
+
+void mqtt_manager_commit_mhz1911a_config(bool enabled)
+{
+    portENTER_CRITICAL(&s_stats_lock);
+    s_mhz1911a_enabled = enabled;
+    s_mhz1911a.pending = false;
+    ++s_mhz1911a_epoch;
+    portEXIT_CRITICAL(&s_stats_lock);
+}
+
+static int format_mhz1911a(char *payload, size_t capacity, uint16_t co2_ppm,
+                          int64_t acquired_us, uint32_t seq)
+{
+    // Same fixed-buffer JSON encoding and boot identity as existing telemetry.
+    int len = snprintf(payload, capacity,
+        "{\"sensor\":\"mhz1911a\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
+        ",\"uptime_ms\":%" PRId64 ",\"co2_ppm\":%u}",
+        s_boot_id, seq, acquired_us / 1000, (unsigned)co2_ppm);
+    return len < 0 || (size_t)len >= capacity ? -1 : len;
+}
+
+static void service_mhz1911a_snapshot(void)
+{
+    bool busy = (s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue)) ||
+                (s_event_queue != NULL && uxQueueMessagesWaiting(s_event_queue));
+    uint16_t co2_ppm;
+    int64_t acquired_us;
+    uint32_t epoch;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (!s_mhz1911a_enabled || !s_mhz1911a.pending || busy) {
+        if (s_mhz1911a.pending) ++s_mhz1911a_deferred;
+        portEXIT_CRITICAL(&s_stats_lock);
+        return;
+    }
+    co2_ppm = s_mhz1911a.co2_ppm;
+    epoch = s_mhz1911a_epoch;
+    acquired_us = s_mhz1911a.acquired_us;
+    s_mhz1911a.pending = false; // Consume once, including offline/failed attempts.
+    portEXIT_CRITICAL(&s_stats_lock);
+
+    tx_stats_t *stats = &s_stats[TX_MHZ1911A];
+    uint32_t seq = begin_attempt(TX_MHZ1911A);
+    if (esp_timer_get_time() - acquired_us >= MHZ1911A_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    char payload[MHZ1911A_PAYLOAD_SIZE];
+    int len = format_mhz1911a(payload, sizeof(payload), co2_ppm, acquired_us, seq);
+    if (len < 0) {
+        count_event(&stats->invalid);
+        return;
+    }
+    int64_t start_us = esp_timer_get_time();
+    if (start_us - acquired_us >= MHZ1911A_MAX_AGE_US) {
+        count_event(&stats->stale);
+        return;
+    }
+    if (!mqtt_connected()) {
+        count_event(&stats->offline);
+        return;
+    }
+    // Linearize admission against reader configuration without holding a
+    // spinlock across an SDK call. Work admitted before a commit may finish;
+    // copied data from an older epoch cannot gain admission after that commit.
+    portENTER_CRITICAL(&s_stats_lock);
+    bool admitted = s_mhz1911a_enabled && epoch == s_mhz1911a_epoch;
+    if (!admitted) ++stats->cancelled;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!admitted) return;
+    // Only the shared publisher calls the SDK. Its local copy cannot be torn by
+    // a concurrent reader update, and the reader never waits on this SDK mutex.
+    int result = esp_mqtt_client_publish(s_client, MHZ1911A_DATA_TOPIC, payload, len, 0, 0);
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    portENTER_CRITICAL(&s_stats_lock);
+    if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;
+    if (result >= 0) ++stats->publish_ok;
+    else ++stats->publish_failed;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (result < 0 && esp_timer_get_time() >= s_mhz1911a_next_failure_log_us) {
+        ESP_LOGW(TAG, "%s publish failed (result=%d); see drop counters", MHZ1911A_DATA_TOPIC, result);
+        s_mhz1911a_next_failure_log_us = esp_timer_get_time() + 10000000LL;
+    }
+}
+
 static TickType_t publisher_wait_ticks(void)
 {
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&s_stats_lock);
     int64_t remaining = s_radar_enabled ? s_radar_next_publish_us - now : 1000000;
+    // A pending distance sample may be due before the radar deadline. With
+    // no sample, the existing 1 s ceiling still discovers the next handoff.
+    if (s_hcsr04p.pending && s_hcsr04p_next_publish_us - now < remaining) {
+        remaining = s_hcsr04p_next_publish_us - now;
+    }
     portEXIT_CRITICAL(&s_stats_lock);
     // The old fixed 1 s wait would prevent 500 ms publication on an idle queue.
     // Keep the existing 1 s ceiling and round up to at least one RTOS tick.
@@ -447,12 +727,14 @@ static void mqtt_tx_task(void *arg)
     (void)arg;
     static const char *const topics[TX_KIND_COUNT] = {
         DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC,
-        BME280_DATA_TOPIC, MAX6675_DATA_TOPIC
+        HCSR04P_DATA_TOPIC, MHZ1911A_DATA_TOPIC, BME280_DATA_TOPIC, MAX6675_DATA_TOPIC
     };
     tx_message_t message;
     int64_t next_failure_log_us = 0;
     while (true) {
         service_radar_snapshot();
+        service_hcsr04p_snapshot();
+        service_mhz1911a_snapshot();
         if (xQueueReceive(s_tx_queue, &message, publisher_wait_ticks()) != pdTRUE) {
             update_outbox_snapshot();
             service_event_queue();
@@ -522,6 +804,10 @@ void mqtt_manager_log_diagnostics(void)
     tx_stats_t snapshot[TX_KIND_COUNT];
     uint32_t connections, disconnects, errors, pubacked, deleted, event_offline, event_waits;
     uint32_t radar_updates, radar_coalesced, radar_invalid, radar_deferred;
+    uint32_t hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred;
+    bool hcsr04p_pending, hcsr04p_enabled;
+    uint32_t mhz1911a_updates, mhz1911a_coalesced, mhz1911a_invalid, mhz1911a_nonnew, mhz1911a_deferred;
+    bool mhz1911a_pending, mhz1911a_enabled;
     bool radar_pending;
     bool radar_enabled;
     uint32_t radar_interval_ms;
@@ -547,6 +833,19 @@ void mqtt_manager_log_diagnostics(void)
     radar_pending = s_radar.pending;
     radar_enabled = s_radar_enabled;
     radar_interval_ms = s_radar_interval_ms;
+    hcsr04p_updates = s_hcsr04p_updates;
+    hcsr04p_coalesced = s_hcsr04p_coalesced;
+    hcsr04p_invalid = s_hcsr04p_invalid;
+    hcsr04p_deferred = s_hcsr04p_deferred;
+    hcsr04p_pending = s_hcsr04p.pending;
+    hcsr04p_enabled = s_hcsr04p_enabled;
+    mhz1911a_updates = s_mhz1911a_updates;
+    mhz1911a_coalesced = s_mhz1911a_coalesced;
+    mhz1911a_invalid = s_mhz1911a_invalid;
+    mhz1911a_nonnew = s_mhz1911a_nonnew;
+    mhz1911a_deferred = s_mhz1911a_deferred;
+    mhz1911a_pending = s_mhz1911a.pending;
+    mhz1911a_enabled = s_mhz1911a_enabled;
     portEXIT_CRITICAL(&s_stats_lock);
     ESP_LOGI(TAG, "MQTT summary | boot=%08" PRIx32 " uptime_ms=%" PRId64
              " connected=%d tx_pending=%u",
@@ -569,8 +868,15 @@ void mqtt_manager_log_diagnostics(void)
     ESP_LOGI(TAG, "  radar_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
              " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=%" PRIu32 " max_age_ms=2000",
              radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending, radar_enabled, radar_interval_ms);
+    ESP_LOGI(TAG, "  hcsr04p_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
+             " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=1000 max_age_ms=2000",
+             hcsr04p_updates, hcsr04p_coalesced, hcsr04p_invalid, hcsr04p_deferred, hcsr04p_pending, hcsr04p_enabled);
+    ESP_LOGI(TAG, "  mhz1911a_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
+             " invalid_updates=%" PRIu32 " nonnew_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d max_age_ms=2000",
+             mhz1911a_updates, mhz1911a_coalesced, mhz1911a_invalid, mhz1911a_nonnew, mhz1911a_deferred, mhz1911a_pending, mhz1911a_enabled);
     static const char *const names[TX_KIND_COUNT] = {
-        "dht22", "gy511", "config_ack", "rc522_event", "ld2450", "bme280", "max6675"};
+        "dht22", "gy511", "config_ack", "rc522_event", "ld2450", "hcsr04p", "mhz1911a",
+        "bme280", "max6675"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
         ESP_LOGI(TAG, "%s attempts=%" PRIu32 " queued=%" PRIu32

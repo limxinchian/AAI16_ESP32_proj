@@ -9,5 +9,6 @@ idf_component_register(
         freertos
         sensor_status
         ld2450_sensor
-    PRIV_REQUIRES esp_timer esp_hw_support
+        hcsr04p_sensor
+    PRIV_REQUIRES esp_timer esp_hw_support mhz1911a_sensor
 )

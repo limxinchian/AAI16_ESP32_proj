@@ -89,13 +89,13 @@ int main(void)
         assert(sensor_status_configure((sensor_id_t)id, "future", false) == ESP_OK);
     }
     sensor_status_log_summary();
-    assert(test_log_calls == 8 && strstr(test_last_log, "last_ok_ms=never"));
+    assert(test_summary_logs == 17 && test_logs_contain("last_ok_ms=never"));
     for (test_now_us = 100000; test_now_us < 60000000; test_now_us += 100000) {
         sensor_status_log_summary();
     }
-    assert(test_log_calls == 8);
+    assert(test_summary_logs == 17);
     sensor_status_log_summary();
-    assert(test_log_calls == 16);
+    assert(test_summary_logs == 34);
     puts("PASS: eight status slots, disabled/unavailable, init/read/task transitions, timestamp, bounded reporting");
     return 0;
 }

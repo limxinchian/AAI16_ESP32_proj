@@ -4,7 +4,7 @@
 #include "mqtt_manager.h"
 
 // One notification word carries exactly one command: validated intervals are
-// <= 10000; the high bit tags enable/disable and bit 0 holds its Boolean value.
+// <= 60000; the high bit tags enable/disable and bit 0 holds its Boolean value.
 // Keeping both operations on index 0 preserves their application order.
 #define CONFIG_ENABLED_FLAG (UINT32_C(1) << 31)
 

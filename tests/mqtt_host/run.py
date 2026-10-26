@@ -38,12 +38,15 @@ binary = output / ("test_mqtt.exe" if os.name == "nt" else "test_mqtt")
 compiler = shutil.which(args.cc)
 if not compiler:
     raise SystemExit(f"Host compiler not found: {args.cc}")
-subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
+subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-pthread",
                 "-I", str(test), "-I", str(output),
                 "-I", str(repo / "components/mqtt_manager/include"), "-I", str(cjson),
                 "-I", str(repo / "components/sensor_status/include"),
                 "-I", str(repo / "components/ld2450_sensor/include"),
-                str(test / "test_mqtt.c"), str(cjson / "cJSON.c"), "-lm", "-o", str(binary)], check=True)
+                "-I", str(repo / "components/hcsr04p_sensor/include"),
+                "-I", str(repo / "components/mhz1911a_sensor/include"),
+                str(test / "test_mqtt.c"), str(cjson / "cJSON.c"),
+                str(repo / "components/sensor_status/sensor_status.c"), "-lm", "-o", str(binary)], check=True)
 subprocess.run([str(binary)], check=True)
 
 # Exercise real installed ESP-MQTT code as well as manager API doubles. This

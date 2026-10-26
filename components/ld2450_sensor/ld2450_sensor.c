@@ -40,13 +40,13 @@ esp_err_t ld2450_sensor_init(void)
     if (err == ESP_OK) err = uart_set_pin(RADAR_UART, 17, 18, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
         esp_err_t cleanup = ld2450_sensor_deinit();
-        if (cleanup != ESP_OK) ESP_LOGE("LD2450", "UART cleanup failed: %s", esp_err_to_name(cleanup));
+        if (cleanup != ESP_OK) ESP_LOGE("SENSOR", "ld2450  | ERROR | UART cleanup failed: %s", esp_err_to_name(cleanup));
         return err;
     }
     s_parser = (ld2450_parser_t){0};
     s_diag = (ld2450_diagnostics_t){0};
     s_initialized = true;
-    ESP_LOGI("LD2450", "UART1 configured | TX=17 RX=18 | 256000 8N1 | receive only");
+    ESP_LOGI("SENSOR", "ld2450  | HEALTH | UART1 configured | TX=17 RX=18 | 256000 8N1 | receive only");
     return ESP_OK;
 }
 

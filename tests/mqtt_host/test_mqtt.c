@@ -3,6 +3,8 @@
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include "platform.h"
 #include "mqtt_manager_under_test.c"
 
@@ -18,12 +20,16 @@ static int64_t outbox_query_delay_us;
 static int fail_step, step;
 static int last_qos;
 static char last_payload[LD2450_PAYLOAD_SIZE], last_topic[64];
-static unsigned critical_depth;
+static _Thread_local unsigned critical_depth;
+static pthread_mutex_t critical_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void (*publish_hook)(void);
+static void (*distance_reader)(void *);
+static void (*co2_reader)(void *);
+static void (*reader_delay_hook)(TickType_t);
 static void (*timer_hook)(void);
 static unsigned timer_hook_countdown, last_worker_wait;
-void test_enter_critical(void) { assert(!critical_depth); critical_depth++; }
-void test_exit_critical(void) { assert(critical_depth == 1); critical_depth--; }
+void test_enter_critical(void) { assert(!critical_depth); assert(!pthread_mutex_lock(&critical_mutex)); critical_depth++; }
+void test_exit_critical(void) { assert(critical_depth == 1); critical_depth--; assert(!pthread_mutex_unlock(&critical_mutex)); }
 static bool failure(void) { return ++step == fail_step; }
 
 QueueHandle_t xQueueCreate(unsigned capacity, unsigned size)
@@ -80,7 +86,18 @@ void xEventGroupClearBits(EventGroupHandle_t g, unsigned b) { *g &= ~b; }
 void vEventGroupDelete(EventGroupHandle_t g) { free(g); allocs--; }
 int xTaskCreate(void (*f)(void *), const char *n, unsigned s, void *a,
                 unsigned p, TaskHandle_t *h)
-{ if (failure()) return 0; *h = (void *)1; return pdPASS; }
+{
+    assert(s == 4096 && p == 3 && !a);
+    if (!strcmp(n, "hcsr04p_reader")) {
+        assert(h); *h = (void *)2; distance_reader = f; return pdPASS;
+    }
+    if (!strcmp(n, "mhz1911a_reader")) {
+        assert(h); *h = &co2_reader; co2_reader = f; return pdPASS;
+    }
+    assert(!strcmp(n, "mqtt_tx") && h);
+    if (failure()) return 0;
+    *h = (void *)1; return pdPASS;
+}
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t) { return 1024; }
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *c)
 {
@@ -302,6 +319,9 @@ static void test_rfid_events(void)
 }
 
 #include "test_radar.c"
+#include "test_hcsr04p.c"
+#include "test_mhz1911a.c"
+#include "test_mhz1911a_config.c"
 
 int main(void)
 {
@@ -426,6 +446,7 @@ int main(void)
     rejected("{}", "missing_or_invalid_sensor");
     rejected("{\"sensor\":\"future\",\"interval_ms\":5000}", "unsupported_sensor");
     assert(strstr(last_payload, "\"sensor\":\"future\""));
+    // HC-SR04P is now supported; its parser/ACK coverage is in test_hcsr04p_config.
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":\"5000\"}", "missing_or_invalid_interval_ms");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":1999}", "integer from 2000 to 10000");
     rejected("{\"sensor\":\"dht22\",\"interval_ms\":10001}", "integer from 2000 to 10000");
@@ -631,6 +652,10 @@ int main(void)
     assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
     test_radar_telemetry();
     test_radar_config();
+    test_hcsr04p_telemetry();
+    test_hcsr04p_config();
+    test_mhz1911a_telemetry();
+    test_mhz1911a_config();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +

@@ -20,12 +20,14 @@ static void log_diagnostics(unsigned timeouts, int64_t age_us)
 {
     ld2450_diagnostics_t d;
     ld2450_sensor_get_diagnostics(&d);
-    ESP_LOGI("LD2450", "frames=%" PRIu32 " rx_bytes=%" PRIu32 " bad_frames=%" PRIu32 " partial=%" PRIu32
-             " dropped_known=%" PRIu32 " uart_errors=%" PRIu32 " rx_overflow=%" PRIu32
-             " event_overflow=%" PRIu32 " timeouts=%u last_valid_age_ms=%" PRId64
+    ESP_LOGI("SENSOR", "ld2450  | HEALTH | frames_total=%" PRIu32 " rx_bytes_total=%" PRIu32
+             " bad_frames_total=%" PRIu32 " partial_total=%" PRIu32 " dropped_known_total=%" PRIu32,
+             d.frames, d.rx_bytes, d.framing_errors, d.partial_timeouts, d.discarded_bytes);
+    ESP_LOGI("SENSOR", "ld2450  | HEALTH | uart_errors_total=%" PRIu32 " rx_overflow_total=%" PRIu32
+             " event_overflow_total=%" PRIu32 " silence_timeouts_total=%u",
+             d.uart_errors, d.rx_overflows, d.event_overflows, timeouts);
+    ESP_LOGI("SENSOR", "ld2450  | HEALTH | last_valid_age_ms=%" PRId64
              " rx_high=%u max_process_us=%" PRId64 " stack_min=%u B",
-             d.frames, d.rx_bytes, d.framing_errors, d.partial_timeouts, d.discarded_bytes,
-             d.uart_errors, d.rx_overflows, d.event_overflows, timeouts,
              age_us < 0 ? -1 : age_us / 1000,
              (unsigned)d.max_buffered_bytes, d.max_processing_us,
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -33,12 +35,12 @@ static void log_diagnostics(unsigned timeouts, int64_t age_us)
 
 static void log_report(const ld2450_report_t *report)
 {
-    ESP_LOGI("LD2450", "Targets=%u", report->count);
+    ESP_LOGI("SENSOR", "ld2450  | DATA | targets=%u", report->count);
     for (unsigned i = 0; i < LD2450_TARGETS; ++i) {
         const ld2450_target_t *t = &report->targets[i];
         if (!t->present) continue;
         unsigned distance = (unsigned)(sqrtf((float)t->x_mm * t->x_mm + (float)t->y_mm * t->y_mm) + 0.5f);
-        ESP_LOGI("LD2450", "  slot=%u x=%d mm y=%d mm distance=%u mm speed=%d cm/s resolution=%u mm",
+        ESP_LOGI("SENSOR", "ld2450  | DATA | slot=%u x=%d mm y=%d mm distance=%u mm speed=%d cm/s resolution=%u mm",
                  i + 1, t->x_mm, t->y_mm, distance, t->speed_cm_s, t->resolution_mm);
     }
 }
@@ -49,7 +51,7 @@ static void ld2450_reader_task(void *arg)
     esp_err_t err = ld2450_sensor_init();
     if (err != ESP_OK) {
         sensor_status_record_init(SENSOR_LD2450, err);
-        ESP_LOGE("LD2450", "UART initialization failed: %s; other sensors continue", esp_err_to_name(err));
+        ESP_LOGE("SENSOR", "ld2450  | ERROR | UART initialization failed: %s; other sensors continue", esp_err_to_name(err));
         vTaskDelete(NULL);
         return;
     }
@@ -61,7 +63,7 @@ static void ld2450_reader_task(void *arg)
     unsigned displayed_mask = UINT32_MAX, timeouts = 0;
     bool enabled = true, fresh_report = false;
     ld2450_report_t report = {0};
-    ESP_LOGI("LD2450", "Waiting for first valid report (5000 ms); MQTT latest snapshot at ~1 Hz");
+    ESP_LOGI("SENSOR", "ld2450  | HEALTH | Waiting for first valid report (5000 ms); MQTT latest snapshot at ~1 Hz");
     while (true) {
         // Same no-overwrite notification handoff as the other reader owners.
         // UART waits are <=100 ms, so no extra control task/queue is necessary.
@@ -83,7 +85,7 @@ static void ld2450_reader_task(void *arg)
                 // new measurement. Flush only on an actual disabled->enabled edge.
                 err = ld2450_sensor_discard_pending();
                 if (err != ESP_OK) {
-                    ESP_LOGW("LD2450", "Resume input discard failed: %s; remains disabled", esp_err_to_name(err));
+                    ESP_LOGW("SENSOR", "ld2450  | ERROR | Resume input discard failed: %s; remains disabled", esp_err_to_name(err));
                     (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
                     continue;
                 }
@@ -113,9 +115,9 @@ static void ld2450_reader_task(void *arg)
                     displayed_mask = UINT32_MAX;
                 }
                 enabled = update.enabled;
-                ESP_LOGI("LD2450", "[CONFIG] enabled applied: %s; UART draining continues", enabled ? "true" : "false");
+                ESP_LOGI("SENSOR", "ld2450  | HEALTH | config_enabled=%s uart_draining=true", enabled ? "true" : "false");
             } else {
-                ESP_LOGI("LD2450", "[CONFIG] MQTT interval applied: %lu ms; UART rate unchanged", (unsigned long)update.interval_ms);
+                ESP_LOGI("SENSOR", "ld2450  | HEALTH | config_mqtt_interval_ms=%lu uart_rate=unchanged", (unsigned long)update.interval_ms);
             }
             (void)mqtt_manager_publish_config_ack(&update);
         }
@@ -143,8 +145,9 @@ static void ld2450_reader_task(void *arg)
             // Startup errors remain diagnostic evidence until the first-report
             // deadline. Do not falsely mark the unproven sensor initialized.
             sensor_status_record_read(SENSOR_LD2450, err, now);
-            if (now >= next_warning) {
-                ESP_LOGW("LD2450", "Receive failed: %s", esp_err_to_name(err));
+            // After initialization the registry owns failure/recovery logs.
+            if (last_valid < 0 && !frames && now >= next_warning) {
+                ESP_LOGW("SENSOR", "ld2450  | ERROR | Receive failed: %s", esp_err_to_name(err));
                 next_warning = now + SUMMARY_US;
             }
         }
@@ -159,20 +162,16 @@ static void ld2450_reader_task(void *arg)
             (void)mqtt_manager_update_ld2450_snapshot(&report, now);
         } else if (last_valid < 0 && now - started >= FIRST_REPORT_US) {
             sensor_status_record_init(SENSOR_LD2450, ESP_ERR_TIMEOUT);
-            ESP_LOGE("LD2450", "No valid report within 5000 ms; unavailable; other sensors continue");
+            ESP_LOGE("SENSOR", "ld2450  | ERROR | No valid report within 5000 ms; unavailable; other sensors continue");
             log_diagnostics(1, -1);
             esp_err_t cleanup = ld2450_sensor_deinit();
-            if (cleanup != ESP_OK) ESP_LOGE("LD2450", "UART cleanup failed: %s", esp_err_to_name(cleanup));
+            if (cleanup != ESP_OK) ESP_LOGE("SENSOR", "ld2450  | ERROR | UART cleanup failed: %s", esp_err_to_name(cleanup));
             vTaskDelete(NULL);
             return; // No automatic initialization retry.
         } else if (last_valid >= 0 && now >= next_silence) {
             sensor_status_record_read(SENSOR_LD2450, ESP_ERR_TIMEOUT, now);
             timeouts++;
             next_silence = now + SILENCE_US;
-            if (now >= next_warning) {
-                ESP_LOGW("LD2450", "No valid report for >=2000 ms");
-                next_warning = now + SUMMARY_US;
-            }
         }
         unsigned mask = 0;
         for (unsigned i = 0; i < LD2450_TARGETS; ++i) if (report.targets[i].present) mask |= 1U << i;
@@ -200,7 +199,7 @@ void ld2450_reader_start(void)
     sensor_status_configure(SENSOR_LD2450, "ld2450", true);
     if (xTaskCreate(ld2450_reader_task, "ld2450_reader", 4096, NULL, 3, &s_ld2450_task) != pdPASS) {
         sensor_status_record_unavailable(SENSOR_LD2450, SENSOR_STAGE_TASK, ESP_ERR_NO_MEM);
-        ESP_LOGE("LD2450", "Reader task creation failed; other sensors continue");
+        ESP_LOGE("SENSOR", "ld2450  | ERROR | Reader task creation failed; other sensors continue");
     }
 }
 

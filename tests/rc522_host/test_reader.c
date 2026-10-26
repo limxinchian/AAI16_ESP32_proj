@@ -92,8 +92,9 @@ int main(int argc, char **argv)
             assert(status.state == SENSOR_READY && status.last_success_us >= 0);
             unsigned expected_logs = (!strcmp(scenario, "remove") || !strcmp(scenario, "change") ||
                                       !strcmp(scenario, "resume") || !strcmp(scenario, "held_error")) ? 3 : 2;
+            expected_logs += !strcmp(scenario, "resume") || !strcmp(scenario, "held_error");
             assert(test_log_calls == expected_logs);
-            if (strcmp(scenario, "held_error")) assert(strstr(test_last_log, "UID ("));
+            if (strcmp(scenario, "held_error")) assert(strstr(test_last_log, "| DATA | event=PRESENT uid="));
             assert(status.read_failures == (!strcmp(scenario, "resume") ? 2U :
                                            !strcmp(scenario, "held_error") ? 1U : 0U));
             assert(status.consecutive_failures == 0);
@@ -106,6 +107,9 @@ int main(int argc, char **argv)
         unsigned count = (!strcmp(scenario, "remove") || !strcmp(scenario, "change")) ? 2 : 1;
         assert(events == count);
         assert(presented[0].length == (!strcmp(scenario, "uid4") ? 4 : !strcmp(scenario, "uid7") ? 7 : 10));
+        assert(test_logs_contain(!strcmp(scenario, "uid4") ? "uid=00010203 uid_len=4" :
+                                !strcmp(scenario, "uid7") ? "uid=00010203040506 uid_len=7" :
+                                "uid=00010203040506070809 uid_len=10"));
         for (unsigned i = 0; i < presented[0].length; ++i) assert(presented[0].bytes[i] == i);
         if (!strcmp(scenario, "remove")) assert(!memcmp(&presented[0], &presented[1], sizeof(presented[0])));
         if (!strcmp(scenario, "change")) assert(presented[1].bytes[0] == 0xff);

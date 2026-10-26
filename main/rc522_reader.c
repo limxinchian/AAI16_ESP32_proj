@@ -5,7 +5,6 @@
 #include "mqtt_manager.h"
 #include "sensor_config.h"
 
-#include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -13,7 +12,6 @@
 #include "freertos/task.h"
 
 #define POLL_MS 200
-#define ERROR_LOG_US 10000000LL
 
 static TaskHandle_t s_reader_task;
 
@@ -23,19 +21,18 @@ static void rc522_reader_task(void *arg)
     esp_err_t err = rc522_sensor_init();
     sensor_status_record_init(SENSOR_RC522, err);
     if (err != ESP_OK) {
-        ESP_LOGE("RC522", "Initialization failed: %s; other sensors continue", esp_err_to_name(err));
+        ESP_LOGE("SENSOR", "rc522   | ERROR | Initialization failed: %s; other sensors continue", esp_err_to_name(err));
         vTaskDelete(NULL);
         return;
     }
     rc522_uid_t last_uid = {0};
     unsigned idle_polls = 0;
-    int64_t next_error_log_us = 0;
     TickType_t next_due = xTaskGetTickCount();
     TickType_t last_sample = next_due;
     TickType_t period = pdMS_TO_TICKS(POLL_MS);
     uint32_t control = 0;
     bool pending_update = false;
-    ESP_LOGI("RC522", "Reader running | poll=%d ms | MQTT card presentation events", POLL_MS);
+    ESP_LOGI("SENSOR", "rc522   | HEALTH | Reader running | poll=%d ms | MQTT card presentation events", POLL_MS);
     while (true) {
         // Same bounded, ordered handoff as GY-511. Only this task commits the
         // acquisition gate/schedule, between complete RFID transactions.
@@ -66,13 +63,13 @@ static void rc522_reader_task(void *arg)
                     // require three fresh consecutive idle polls after resume.
                     idle_polls = 0;
                 }
-                ESP_LOGI("RC522", "[CONFIG] enabled applied: %s", update.enabled ? "true" : "false");
+                ESP_LOGI("SENSOR", "rc522   | HEALTH | config_enabled=%s", update.enabled ? "true" : "false");
             } else {
                 period = pdMS_TO_TICKS(update.interval_ms + portTICK_PERIOD_MS - 1);
                 next_due = last_sample + period;
                 TickType_t now = xTaskGetTickCount();
                 if ((int32_t)(next_due - now) < 0) next_due = now;
-                ESP_LOGI("RC522", "[CONFIG] interval applied: %lu ms", (unsigned long)update.interval_ms);
+                ESP_LOGI("SENSOR", "rc522   | HEALTH | config_period_ms=%lu", (unsigned long)update.interval_ms);
             }
             (void)mqtt_manager_publish_config_ack(&update);
         }
@@ -96,10 +93,6 @@ static void rc522_reader_task(void *arg)
             sensor_status_record_read(SENSOR_RC522, err, now);
             // Do not interpret a communication failure as card removal.
             idle_polls = 0;
-            if (now >= next_error_log_us) {
-                next_error_log_us = now + ERROR_LOG_US;
-                ESP_LOGW("RC522", "Poll failed: %s", esp_err_to_name(err));
-            }
         } else if (present) {
             sensor_status_record_read(SENSOR_RC522, ESP_OK, now);
             idle_polls = 0;
@@ -107,12 +100,14 @@ static void rc522_reader_task(void *arg)
                 // Zero-wait handoff only. Delivery failures belong to MQTT
                 // diagnostics, not sensor health; do not retry a held card.
                 (void)mqtt_manager_publish_rc522_event(uid.bytes, uid.length);
-                char text[30]; // Ten hex bytes, nine spaces and NUL.
-                size_t used = 0;
-                for (unsigned i = 0; i < uid.length; ++i) {
-                    used += snprintf(text + used, sizeof(text) - used, "%s%02X", i ? " " : "", uid.bytes[i]);
+                // Fixed bounds, including the maximum ten-byte UID and NUL.
+                char text[sizeof(uid.bytes) * 2 + 1] = {0};
+                static const char hex[] = "0123456789ABCDEF";
+                for (unsigned i = 0; i < uid.length && i < sizeof(uid.bytes); ++i) {
+                    text[2 * i] = hex[uid.bytes[i] >> 4];
+                    text[2 * i + 1] = hex[uid.bytes[i] & 0x0f];
                 }
-                ESP_LOGI("RC522", "UID (%u bytes): %s", (unsigned)uid.length, text);
+                ESP_LOGI("SENSOR", "rc522   | DATA | event=PRESENT uid=%s uid_len=%u", text, (unsigned)uid.length);
                 last_uid = uid;
             }
         } else {
@@ -133,12 +128,12 @@ void rc522_reader_start(void)
     esp_err_t err = spi_bus_manager_init();
     if (err != ESP_OK) {
         sensor_status_record_unavailable(SENSOR_RC522, SENSOR_STAGE_DEPENDENCY, err);
-        ESP_LOGE("RC522", "SPI bus unavailable: %s; other sensors continue", esp_err_to_name(err));
+        ESP_LOGE("SENSOR", "rc522   | ERROR | SPI bus unavailable: %s; other sensors continue", esp_err_to_name(err));
         return;
     }
     if (xTaskCreate(rc522_reader_task, "rc522_reader", 4096, NULL, 3, &s_reader_task) != pdPASS) {
         sensor_status_record_unavailable(SENSOR_RC522, SENSOR_STAGE_TASK, ESP_ERR_NO_MEM);
-        ESP_LOGE("RC522", "Reader task creation failed; other sensors continue");
+        ESP_LOGE("SENSOR", "rc522   | ERROR | Reader task creation failed; other sensors continue");
     }
 }
 

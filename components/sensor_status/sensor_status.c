@@ -8,8 +8,15 @@
 #include "freertos/FreeRTOS.h"
 
 #define STATUS_REPORT_US 60000000LL
+#define TRANSITION_LOG_US 10000000LL
 
 static sensor_status_t s_sensors[SENSOR_STATUS_CAPACITY];
+// Presentation only: health counters/state always update, even during flapping.
+static struct {
+    esp_err_t reported_error;
+    int64_t next_error_us, next_recovery_us;
+    uint32_t coalesced;
+} s_read_logs[SENSOR_STATUS_CAPACITY];
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool valid_id(sensor_id_t id)
@@ -34,6 +41,9 @@ esp_err_t sensor_status_configure(sensor_id_t id, const char *name, bool enabled
         .state = enabled ? SENSOR_UNINITIALIZED : SENSOR_DISABLED,
         .last_success_us = -1,
     };
+    s_read_logs[id].reported_error = ESP_OK;
+    s_read_logs[id].next_error_us = s_read_logs[id].next_recovery_us = 0;
+    s_read_logs[id].coalesced = 0;
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
 }
@@ -68,14 +78,23 @@ void sensor_status_record_unavailable(sensor_id_t id, sensor_error_stage_t stage
     portEXIT_CRITICAL(&s_lock);
 }
 
-void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us)
+static void record_acquisition(sensor_id_t id, esp_err_t error, int64_t completed_us,
+                               uint32_t unavailable_after)
 {
     if (!valid_id(id)) return;
+    bool emit = false;
+    sensor_status_t snapshot = {0};
     portENTER_CRITICAL(&s_lock);
     sensor_status_t *status = &s_sensors[id];
-    if (can_sample(status)) {
+    bool probe = unavailable_after > 0;
+    bool probe_allowed = probe && status->name != NULL &&
+        (status->state == SENSOR_UNINITIALIZED ||
+         (status->state == SENSOR_UNAVAILABLE && status->error_stage == SENSOR_STAGE_READ));
+    if (can_sample(status) || probe_allowed) {
+        esp_err_t previous_error = status->last_error;
         status->last_error = error;
         if (error == ESP_OK) {
+            if (probe) status->initialized = true;
             status->state = SENSOR_READY;
             status->error_stage = SENSOR_STAGE_NONE;
             status->read_successes++;
@@ -86,9 +105,53 @@ void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t complete
             status->error_stage = SENSOR_STAGE_READ;
             status->read_failures++;
             status->consecutive_failures++;
+            if (probe && (!status->initialized || status->consecutive_failures >= unavailable_after))
+                status->state = SENSOR_UNAVAILABLE;
+        }
+        // First failure and first recovery are immediate. Repeated identical
+        // errors are silent; rapid alternation is bounded to one warning and
+        // one recovery per 10 s. A pending stable transition logs on the next
+        // read after its deadline. Never delay or discard an acquisition.
+        int64_t *deadline = error == ESP_OK ? &s_read_logs[id].next_recovery_us :
+                                             &s_read_logs[id].next_error_us;
+        if (error != s_read_logs[id].reported_error && completed_us >= *deadline) {
+            *deadline = completed_us + TRANSITION_LOG_US;
+            s_read_logs[id].reported_error = error;
+            snapshot = *status;
+            emit = true;
+        } else if (error != previous_error) {
+            s_read_logs[id].coalesced++;
         }
     }
     portEXIT_CRITICAL(&s_lock);
+    // ESP-IDF serializes each complete log call; never format or log in a
+    // critical section. This API is task-only and called by each sensor owner.
+    if (emit && error != ESP_OK) {
+        ESP_LOGW("SENSOR", "%-7.16s | ERROR | state=%s error=%s failed_total=%" PRIu32
+                 " consecutive=%" PRIu32,
+                 snapshot.name, sensor_status_state_name(snapshot.state), esp_err_to_name(error), snapshot.read_failures,
+                 snapshot.consecutive_failures);
+    } else if (emit) {
+        ESP_LOGI("SENSOR", "%-7.16s | HEALTH | recovery=READY ok_total=%" PRIu32 " failed_total=%" PRIu32,
+                 snapshot.name, snapshot.read_successes, snapshot.read_failures);
+    }
+}
+
+void sensor_status_record_read(sensor_id_t id, esp_err_t error, int64_t completed_us)
+{
+    record_acquisition(id, error, completed_us, 0);
+}
+
+void sensor_status_record_probe(sensor_id_t id, esp_err_t error, int64_t completed_us,
+                                uint32_t unavailable_after)
+{
+    if (unavailable_after) record_acquisition(id, error, completed_us, unavailable_after);
+}
+
+const char *sensor_status_state_name(sensor_state_t state)
+{
+    static const char *const names[] = {"DISABLED", "UNINITIALIZED", "READY", "DEGRADED", "UNAVAILABLE"};
+    return (unsigned)state < sizeof(names) / sizeof(*names) ? names[state] : "UNKNOWN";
 }
 
 esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled)
@@ -102,6 +165,22 @@ esp_err_t sensor_status_set_enabled(sensor_id_t id, bool enabled)
         // particular, re-enabling must not erase a previous read failure.
         status->state = !enabled ? SENSOR_DISABLED :
             (status->error_stage == SENSOR_STAGE_READ ? SENSOR_DEGRADED : SENSOR_READY);
+        result = ESP_OK;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return result;
+}
+
+esp_err_t sensor_status_set_probe_enabled(sensor_id_t id, bool enabled)
+{
+    if (!valid_id(id)) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_lock);
+    sensor_status_t *status = &s_sensors[id];
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (status->name != NULL && (status->error_stage == SENSOR_STAGE_NONE ||
+                                 status->error_stage == SENSOR_STAGE_READ)) {
+        if (!enabled) status->state = SENSOR_DISABLED;
+        else if (status->state == SENSOR_DISABLED) status->state = SENSOR_UNINITIALIZED;
         result = ESP_OK;
     }
     portEXIT_CRITICAL(&s_lock);
@@ -135,9 +214,10 @@ void sensor_status_log_summary(void)
     next_report_us = now_us + STATUS_REPORT_US;
 
     static const char *const states[] = {
-        "disabled", "uninitialized", "ready", "degraded", "unavailable"
+        "DISABLED", "UNINITIALIZED", "READY", "DEGRADED", "UNAVAILABLE"
     };
-    static const char *const stages[] = {"none", "dependency", "init", "task", "read"};
+    static const char *const stages[] = {"NONE", "DEPENDENCY", "INIT", "TASK", "READ"};
+    ESP_LOGI("SENSORS", "HEALTH SUMMARY | counters=cumulative last_ok_ms=uptime");
     for (int id = 0; id < SENSOR_STATUS_CAPACITY; ++id) {
         sensor_status_t status;
         if (!sensor_status_get((sensor_id_t)id, &status)) continue;
@@ -147,11 +227,17 @@ void sensor_status_log_summary(void)
             snprintf(last_success, sizeof(last_success), "%" PRId64,
                      status.last_success_us / 1000);
         }
-        ESP_LOGI("SENSORS", "%s state=%s init=%d stage=%s error=%s "
-                 "ok=%" PRIu32 " failed=%" PRIu32 " consecutive=%" PRIu32 " last_ok_ms=%s",
-                 status.name, states[status.state], status.initialized,
-                 stages[status.error_stage], esp_err_to_name(status.last_error),
+        uint32_t coalesced;
+        portENTER_CRITICAL(&s_lock);
+        coalesced = s_read_logs[id].coalesced;
+        portEXIT_CRITICAL(&s_lock);
+        ESP_LOGI("SENSORS", "%-7.16s | HEALTH | state=%s ok=%" PRIu32 " failed=%" PRIu32
+                 " consecutive=%" PRIu32 " last_ok_ms=%s",
+                 status.name, states[status.state],
                  status.read_successes, status.read_failures,
                  status.consecutive_failures, last_success);
+        ESP_LOGI("SENSORS", "%-7.16s | HEALTH | init=%d stage=%s error=%s transitions_coalesced_total=%" PRIu32,
+                 status.name, status.initialized, stages[status.error_stage],
+                 esp_err_to_name(status.last_error), coalesced);
     }
 }

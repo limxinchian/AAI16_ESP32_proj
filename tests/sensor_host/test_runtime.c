@@ -1,4 +1,4 @@
-// Four real application loops with deterministic, cooperative host scheduling.
+// Six real sensor application loops with cooperative host scheduling.
 // pthreads provide separate C stacks; only one simulated task runs at a time.
 // This tests dispatch interleavings, not ESP32 SMP timing or the MQTT transport.
 #include "platform.h"
@@ -7,12 +7,11 @@
 #include <pthread.h>
 #include <string.h>
 
-static int quiet_printf(const char *format, ...) { return 0; }
-#define printf quiet_printf
 #include "../../main/main.c"
 #include "../../main/rc522_reader.c"
 #include "../../main/ld2450_reader.c"
-#undef printf
+#include "../../main/hcsr04p_reader.c"
+#include "../../main/mhz1911a_reader.c"
 
 // BME280 is exercised by test_bme280; these scenarios run without it.
 void bme280_reader_start(void)
@@ -35,7 +34,9 @@ typedef struct {
     int64_t wake_us;
     void (*entry)(void *);
 } sim_task_t;
-static sim_task_t tasks[4]; // app_main, GY-511, RC522, LD2450 readers
+enum { SIM_TASKS = 6 };
+static sim_task_t tasks[SIM_TASKS]; // app_main/DHT22, GY511, RC522, LD2450, HC-SR04P, MH-Z1911A
+static bool co2_active, co2_task_failure;
 static pthread_mutex_t scheduler_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t scheduler_changed = PTHREAD_COND_INITIALIZER;
 static bool stopping;
@@ -45,7 +46,7 @@ static bool gy_missing, dht_missing, task_failure, slow_read;
 static bool slow_dht_read, preempt_on_notify, gy_read_error;
 static bool rc_active, rc_missing, rc_task_failure, rc_slow_init, rc_slow_read, rc_read_error;
 static unsigned rc_inits, rc_count, rc_tx;
-static int64_t rc_times[256], rc_event_times[16];
+static int64_t rc_times[1024], rc_event_times[16];
 static const char *rc_scenario;
 static bool radar_active, radar_missing, radar_errors, radar_init_failure, radar_task_failure;
 static unsigned radar_inits, radar_receives, radar_valid, radar_deinits;
@@ -61,8 +62,18 @@ static bool radar_resume_fragment;
 static bool radar_resume_noise;
 static unsigned radar_resume_reads;
 static unsigned diagnostics_paused, dht_inits, gy_inits;
+static bool ultra_active, ultra_missing, ultra_invalid, ultra_resume;
+static bool ultra_init_failure, ultra_task_failure, ultra_overrun;
+static unsigned ultra_inits, ultra_reads, wifi_starts, mqtt_starts;
+static unsigned ultra_snapshots;
+static bool ultra_enabled = true, ultra_read_active, ultra_health_saved;
+static sensor_status_t ultra_disabled_health;
+static int64_t ultra_first_delay_us;
+static bool ultra_recover_on_enable;
+static unsigned ultra_active_notifications;
+static int64_t ultra_times[1024];
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
-static int64_t dht_times[64], gy_times[64];
+static int64_t dht_times[128], gy_times[512];
 static mqtt_config_update_t queue[4];
 static unsigned queued, taken;
 typedef struct { int64_t at_us; mqtt_config_update_t update; const char *rejection; } input_t;
@@ -82,7 +93,7 @@ static unsigned ack_count;
 
 static int task_index(void)
 {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < SIM_TASKS; ++i) {
         if (tasks[i].exists && pthread_equal(tasks[i].thread, pthread_self())) return i;
     }
     assert(false); return -1;
@@ -137,10 +148,13 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
                       void *arg, unsigned priority, TaskHandle_t *handle)
 {
     assert(task_index() == 0 && stack == 4096);
-    int index = !strcmp(name, "gy511_reader") ? 1 : !strcmp(name, "rc522_reader") ? 2 : 3;
+    int index = !strcmp(name, "gy511_reader") ? 1 : !strcmp(name, "rc522_reader") ? 2 :
+                !strcmp(name, "ld2450_reader") ? 3 : !strcmp(name, "hcsr04p_reader") ? 4 : 5;
     assert(index == 1 ? priority == 4 : priority == 3);
-    assert(handle != NULL && (index != 3 || !strcmp(name, "ld2450_reader")));
-    if (index == 1 ? task_failure : index == 2 ? rc_task_failure : (!radar_active || radar_task_failure)) return pdFALSE;
+    assert(handle && (index != 5 || !strcmp(name, "mhz1911a_reader")));
+    if (index == 1 ? task_failure : index == 2 ? rc_task_failure : index == 3 ?
+        (!radar_active || radar_task_failure) : index == 4 ?
+        (!ultra_active || ultra_task_failure) : co2_task_failure) return pdFALSE;
     pthread_mutex_lock(&scheduler_lock);
     tasks[index].exists = true;
     tasks[index].entry = entry;
@@ -152,7 +166,7 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
 }
 void vTaskDelete(TaskHandle_t task)
 {
-    assert(!task && (task_index() == 2 || task_index() == 3));
+    assert(!task && task_index() >= 2 && task_index() < SIM_TASKS);
     pthread_mutex_lock(&scheduler_lock);
     int index = task_index();
     tasks[index].finished = true; tasks[index].running = false; running = -1;
@@ -162,12 +176,13 @@ void vTaskDelete(TaskHandle_t task)
 }
 BaseType_t xTaskNotify(TaskHandle_t handle, uint32_t value, eNotifyAction action)
 {
-    assert(task_index() == 0 && (handle == &tasks[1] || handle == &tasks[2] || handle == &tasks[3]) && action == eSetValueWithoutOverwrite);
+    assert(task_index() == 0 && (handle == &tasks[1] || handle == &tasks[2] || handle == &tasks[3] || handle == &tasks[4] || handle == &tasks[5]) && action == eSetValueWithoutOverwrite);
     sim_task_t *task = handle;
     assert(!task->finished); // Never notify a deleted initialization-failure task.
     if (task->notified) { notify_busy++; return pdFALSE; }
     task->notified = true;
     task->notification = value;
+    if (handle == &tasks[4] && ultra_read_active) ultra_active_notifications++;
     if (task->notify_wait) task->wake_us = test_now_us;
     // Exercise a higher-priority reader committing before app_main removes the
     // FIFO head, as can happen on the target (including across its two cores).
@@ -186,7 +201,47 @@ BaseType_t xTaskNotifyWait(uint32_t clear_entry, uint32_t clear_exit,
     return pdTRUE;
 }
 
-esp_err_t wifi_manager_start(void) { return ESP_OK; }
+esp_err_t wifi_manager_start(void) { wifi_starts++; return ESP_OK; }
+esp_err_t hcsr04p_sensor_init(void)
+{
+    assert(task_index() == 4);
+    ultra_inits++;
+    if (ultra_first_delay_us) vTaskDelay(pdMS_TO_TICKS(ultra_first_delay_us / 1000));
+    return ultra_init_failure ? ESP_ERR_NO_MEM : ESP_OK;
+}
+esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading, int64_t acquired_us)
+{
+    assert(task_index() == 4 && acquired_us == test_now_us && ultra_enabled && !ultra_read_active);
+    assert(reading->distance_cm == 100 && reading->echo_us == 5830.9f);
+    ultra_snapshots++;
+    // Transport unavailability must not change any reader's health/schedule.
+    return ESP_ERR_INVALID_STATE;
+}
+void mqtt_manager_commit_hcsr04p_enabled(bool enabled)
+{
+    assert(task_index() == 4 && !ultra_read_active);
+    if (enabled && !ultra_enabled && ultra_recover_on_enable) ultra_missing = false;
+    ultra_enabled = enabled;
+}
+esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out)
+{
+    assert(task_index() == 4 && ultra_reads < sizeof(ultra_times) / sizeof(*ultra_times) && ultra_inits == 1 && ultra_enabled);
+    sensor_status_t status;
+    assert(sensor_status_get(SENSOR_HCSR04P, &status) && status.initialized && status.state != SENSOR_DISABLED);
+    if (ultra_reads == 0) assert(status.read_successes == 0 && status.last_success_us == -1);
+    if (ultra_resume && ultra_reads == 3) {
+        assert(status.consecutive_failures == 3 && status.state == SENSOR_DEGRADED);
+    }
+    ultra_times[ultra_reads++] = test_now_us - base_us;
+    // Release the scheduler throughout the worst-case capture wait.
+    ultra_read_active = true;
+    vTaskDelay(ultra_overrun && ultra_reads == 1 ? 35 : 4);
+    ultra_read_active = false;
+    if (ultra_missing || (ultra_resume && ultra_reads <= 3)) return ESP_ERR_TIMEOUT;
+    if (ultra_invalid) return ESP_ERR_INVALID_RESPONSE;
+    *out = (hcsr04p_reading_t){.distance_cm = 100, .echo_us = 5830.9f};
+    return ESP_OK;
+}
 esp_err_t ld2450_sensor_init(void)
 { radar_inits++; return radar_init_failure ? ESP_ERR_NO_MEM : ESP_OK; }
 esp_err_t ld2450_sensor_deinit(void) { radar_deinits++; return ESP_OK; }
@@ -252,7 +307,7 @@ esp_err_t rc522_sensor_init(void)
 }
 esp_err_t rc522_sensor_poll(rc522_uid_t *uid, bool *present)
 {
-    assert(task_index() == 2 && rc_count < 256 && sensor_status_can_sample(SENSOR_RC522));
+    assert(task_index() == 2 && rc_count < sizeof(rc_times) / sizeof(*rc_times) && sensor_status_can_sample(SENSOR_RC522));
     int64_t now = test_now_us - base_us;
     rc_times[rc_count++] = now;
     if (rc_slow_read && now == 2200000) vTaskDelay(pdMS_TO_TICKS(700));
@@ -271,7 +326,7 @@ esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t length)
     rc_event_times[rc_tx++] = test_now_us - base_us;
     return ESP_OK;
 }
-esp_err_t mqtt_manager_init(void) { return ESP_OK; }
+esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { return ESP_OK; }
 void i2c_bus_manager_scan(void) {}
 esp_err_t gy511_sensor_init(void) { gy_inits++; return gy_missing ? ESP_FAIL : ESP_OK; }
@@ -287,7 +342,7 @@ esp_err_t dht22_read(dht22_data_t *data)
 }
 esp_err_t gy511_sensor_read(gy511_data_t *data)
 {
-    assert(task_index() == 1 && gy_count < 64);
+    assert(task_index() == 1 && gy_count < sizeof(gy_times) / sizeof(*gy_times));
     assert(sensor_status_can_sample(SENSOR_GY511));
     gy_times[gy_count++] = test_now_us - base_us;
     if (slow_read && test_now_us - base_us == 2100000) vTaskDelay(pdMS_TO_TICKS(700));
@@ -318,19 +373,37 @@ bool mqtt_manager_take_config_update(mqtt_config_update_t *update)
     memmove(queue, queue + 1, queued * sizeof(queue[0]));
     return true;
 }
+static void co2_check_ack(const mqtt_config_update_t *update, const sensor_status_t *status);
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
     // In particular, the dispatcher must NEVER ACK a forwarded GY-511 update.
-    assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : update->sensor == SENSOR_RC522 ? 2 : update->sensor == SENSOR_LD2450 ? 3 : 0));
+    assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : update->sensor == SENSOR_RC522 ? 2 : update->sensor == SENSOR_LD2450 ? 3 : update->sensor == SENSOR_HCSR04P ? 4 : update->sensor == SENSOR_MHZ1911A ? 5 : 0));
     if (update->sensor == SENSOR_LD2450) {
         assert(radar_commits > 0);
         assert(update->operation == MQTT_CONFIG_ENABLED ? radar_enabled == update->enabled : radar_interval_ms == update->interval_ms);
     }
     sensor_status_t status;
     assert(sensor_status_get(update->sensor, &status));
+    if (update->sensor == SENSOR_MHZ1911A) co2_check_ack(update, &status);
+    if (update->sensor == SENSOR_HCSR04P) {
+        assert(!ultra_read_active);
+        if (update->operation == MQTT_CONFIG_ENABLED) {
+            assert(ultra_enabled == update->enabled);
+            if (ultra_health_saved) {
+                assert(status.read_successes == ultra_disabled_health.read_successes &&
+                       status.read_failures == ultra_disabled_health.read_failures &&
+                       status.last_success_us == ultra_disabled_health.last_success_us &&
+                       status.last_error == ultra_disabled_health.last_error &&
+                       status.consecutive_failures == ultra_disabled_health.consecutive_failures);
+            }
+            ultra_health_saved = !update->enabled;
+            if (ultra_health_saved) ultra_disabled_health = status;
+        }
+    }
     if (update->operation == MQTT_CONFIG_ENABLED) {
         // State must already be committed when the ACK API is called.
-        assert(update->enabled ? sensor_status_can_sample(update->sensor) : status.state == SENSOR_DISABLED);
+        assert(update->enabled ? (update->sensor == SENSOR_MHZ1911A ? status.state != SENSOR_DISABLED :
+            sensor_status_can_sample(update->sensor)) : status.state == SENSOR_DISABLED);
         if (update->sensor == SENSOR_LD2450) {
             if (update->enabled && radar_health_saved) {
                 assert(status.read_successes == radar_disabled_health.read_successes &&
@@ -347,7 +420,7 @@ esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
     }
     assert(ack_count < 32);
     acks[ack_count++] = (ack_t){.update = *update, .applied = true, .at_us = test_now_us - base_us,
-        .read_count = update->sensor == SENSOR_DHT22 ? dht_count : update->sensor == SENSOR_GY511 ? gy_count : rc_count,
+        .read_count = update->sensor == SENSOR_DHT22 ? dht_count : update->sensor == SENSOR_GY511 ? gy_count : update->sensor == SENSOR_HCSR04P ? ultra_reads : rc_count,
         .event_count = rc_tx, .state = status.state};
     return ESP_OK;
 }
@@ -397,7 +470,7 @@ static void verify_commands(void)
     assert(dht_tx == dht_count && gy_tx == gy_count - (gy_read_error ? 1U : 0U) && diagnostics > 0);
     // FIFO application/ACK order within each sensor, including rejections at
     // the owner. Cross-sensor ACK order need not match the original FIFO.
-    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_LD2450; ++sensor) {
+    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_MHZ1911A; ++sensor) {
         unsigned cursor = 0;
         for (unsigned i = 0; i < input_count; ++i) {
             const input_t *in = &inputs[i];
@@ -423,7 +496,7 @@ static void simulate(void)
     while (true) {
         while (running >= 0) pthread_cond_wait(&scheduler_changed, &scheduler_lock);
         int64_t next_us = base_us + end_us;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < SIM_TASKS; ++i) {
             if (tasks[i].exists && !tasks[i].finished && tasks[i].wake_us < next_us) next_us = tasks[i].wake_us;
         }
         if (next_input < input_count && base_us + inputs[next_input].at_us < next_us) {
@@ -435,8 +508,8 @@ static void simulate(void)
             assert(queued < 4); // Queue-full validation is covered by the actual MQTT tests.
             queue[queued++] = inputs[next_input++].update;
         }
-        const int priority_order[] = {1, 2, 3, 0};
-        for (unsigned p = 0; p < 4; ++p) {
+        const int priority_order[] = {1, 2, 3, 4, 5, 0};
+        for (unsigned p = 0; p < SIM_TASKS; ++p) {
             int i = priority_order[p];
             if (tasks[i].exists && !tasks[i].finished && tasks[i].wake_us <= test_now_us) {
                 tasks[i].running = true; running = i;
@@ -448,8 +521,11 @@ static void simulate(void)
     stopping = true;
     pthread_cond_broadcast(&scheduler_changed);
     pthread_mutex_unlock(&scheduler_lock);
-    for (int i = 0; i < 4; ++i) if (tasks[i].exists) pthread_join(tasks[i].thread, NULL);
+    for (int i = 0; i < SIM_TASKS; ++i) if (tasks[i].exists) pthread_join(tasks[i].thread, NULL);
 }
+
+#include "../mhz1911a_host/test_runtime.inc"
+#include "../mhz1911a_host/test_config_runtime.inc"
 
 static void test_gates(const char *scenario)
 {
@@ -869,10 +945,66 @@ static void test_radar_config(const char *scenario)
     printf("PASS: LD2450 owner configuration, continuous draining and isolation %s\n", scenario);
 }
 
+#include "test_hcsr04p_config.c"
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
     const char *scenario = argv[1];
+    if (!strncmp(scenario, "co2_config_", 11)) { test_co2_controls(scenario); return 0; }
+    if (!strncmp(scenario, "co2_", 4)) { test_co2_isolation(scenario); return 0; }
+    if (!strncmp(scenario, "ultra_cfg_", 10)) { test_hcsr04p_config(scenario); return 0; }
+    if (!strncmp(scenario, "ultra_", 6)) {
+        ultra_active = radar_active = rc_active = true;
+        rc_scenario = "rc_default";
+        ultra_missing = !strcmp(scenario, "ultra_missing");
+        ultra_invalid = !strcmp(scenario, "ultra_invalid");
+        ultra_resume = !strcmp(scenario, "ultra_resume");
+        ultra_init_failure = !strcmp(scenario, "ultra_init");
+        ultra_task_failure = !strcmp(scenario, "ultra_task");
+        ultra_overrun = !strcmp(scenario, "ultra_overrun");
+        end_us = 8200000;
+        if (!strcmp(scenario, "ultra_wrap")) base_us = ((int64_t)UINT32_MAX - 30) * 10000;
+        test_now_us = base_us;
+        input(2300000, SENSOR_GY511, 1000);
+        input(3400000, SENSOR_GY511, 500);
+        input(4500000, SENSOR_RC522, 300);
+        input(5500000, SENSOR_LD2450, 2000);
+        simulate();
+        verify_commands();
+        assert(wifi_starts == 1 && mqtt_starts == 1);
+        assert(dht_count == 4 && diagnostics == dht_count && gy_count > 10 && rc_count > 20);
+        assert(radar_snapshots > 50 && radar_inits == 1);
+        for (sensor_id_t id = SENSOR_DHT22; id <= SENSOR_LD2450; ++id) {
+            sensor_status_t status;
+            assert(sensor_status_get(id, &status) && status.state == SENSOR_READY && !status.read_failures);
+        }
+        sensor_status_t status;
+        assert(sensor_status_get(SENSOR_HCSR04P, &status));
+        assert(ultra_snapshots == status.read_successes);
+        assert(ultra_inits == (ultra_task_failure ? 0U : 1U));
+        if (ultra_init_failure || ultra_task_failure) {
+            assert(!ultra_reads && status.state == SENSOR_UNAVAILABLE && !status.initialized);
+            assert(status.error_stage == (ultra_init_failure ? SENSOR_STAGE_INIT : SENSOR_STAGE_TASK));
+            assert(!status.read_failures && status.last_success_us == -1);
+        } else {
+            assert(ultra_reads >= 39);
+            for (unsigned i = 1; i < ultra_reads; ++i) {
+                assert(ultra_times[i] - ultra_times[i-1] == (ultra_overrun && i == 1 ? 550000 : 200000));
+            }
+            if (ultra_missing || ultra_invalid) {
+                assert(status.state == SENSOR_DEGRADED && status.read_failures >= 39);
+                assert(status.consecutive_failures == status.read_failures && !status.read_successes);
+                assert(status.last_error == (ultra_missing ? ESP_ERR_TIMEOUT : ESP_ERR_INVALID_RESPONSE));
+                assert(status.last_success_us == -1);
+            } else {
+                assert(status.state == SENSOR_READY && !status.consecutive_failures);
+                assert(status.read_failures == (ultra_resume ? 3U : 0U) && status.read_successes >= 36);
+            }
+        }
+        printf("PASS: HC-SR04P scheduling, configuration and five-sensor isolation %s\n", scenario);
+        return 0;
+    }
     if (!strncmp(scenario, "radar_cfg_", 10)) { test_radar_config(scenario); return 0; }
     if (!strncmp(scenario, "radar_", 6)) { test_radar(scenario); return 0; }
     if (!strncmp(scenario, "rc_", 3)) { test_rc522_config(scenario); return 0; }

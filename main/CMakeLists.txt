@@ -1,5 +1,6 @@
 idf_component_register(
-    SRCS "max6675_reader.c" "bme280_reader.c" "max6675_reader.c" "main.c" "rc522_reader.c" "ld2450_reader.c"
+    SRCS "main.c" "rc522_reader.c" "ld2450_reader.c" "hcsr04p_reader.c" "mhz1911a_reader.c"
+         "bme280_reader.c" "max6675_reader.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         dht22_moisture_sensor
@@ -12,6 +13,8 @@ idf_component_register(
         spi_bus_manager
         rc522_sensor
         ld2450_sensor
+        hcsr04p_sensor
+        mhz1911a_sensor
         bme280_sensor
         max6675_sensor
 )

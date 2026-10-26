@@ -24,7 +24,6 @@ static spi_bus_device_t s_device; // Static storage survives an SDK completion t
 static bool s_initialized, s_reset_configured;
 static uint8_t s_version;
 static int64_t s_deadline_us; // Only the acquisition owner accesses driver state.
-static const char *TAG = "RC522";
 
 #define TRY(call) do { esp_err_t result_ = (call); if (result_ != ESP_OK) return result_; } while (0)
 
@@ -65,13 +64,13 @@ static esp_err_t initialize_chip(void)
     vTaskDelay(pdMS_TO_TICKS(50));
     TRY(read_reg(VERSION, &s_version));
     if (s_version == 0 || s_version == 0xff) {
-        ESP_LOGE(TAG, "VersionReg=0x%02X: invalid response; check power, SPI wiring and RST", s_version);
+        ESP_LOGE("SENSOR", "rc522   | ERROR | VersionReg=0x%02X: invalid response; check power, SPI wiring and RST", s_version);
         return ESP_ERR_INVALID_RESPONSE;
     }
     if (s_version == 0x91 || s_version == 0x92) {
-        ESP_LOGI(TAG, "VersionReg=0x%02X (MFRC522 v%d.0)", s_version, s_version & 0x0f);
+        ESP_LOGI("SENSOR", "rc522   | HEALTH | VersionReg=0x%02X (MFRC522 v%d.0)", s_version, s_version & 0x0f);
     } else {
-        ESP_LOGW(TAG, "VersionReg=0x%02X (unrecognized revision; testing register communication)", s_version);
+        ESP_LOGW("SENSOR", "rc522   | ERROR | VersionReg=0x%02X (unrecognized revision; testing register communication)", s_version);
     }
     TRY(write_reg(COMMAND, CMD_RESET));
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -123,11 +122,11 @@ esp_err_t rc522_sensor_init(void)
     esp_err_t err = initialize_chip();
     if (err != ESP_OK) {
         esp_err_t cleanup = rc522_sensor_deinit();
-        if (cleanup != ESP_OK) ESP_LOGW(TAG, "Cleanup incomplete: %s", esp_err_to_name(cleanup));
+        if (cleanup != ESP_OK) ESP_LOGW("SENSOR", "rc522   | ERROR | Cleanup incomplete: %s", esp_err_to_name(cleanup));
         return err;
     }
     s_initialized = true;
-    ESP_LOGI(TAG, "Ready | CS=14 RST=21 SPI=1 MHz | present a 13.56 MHz ISO14443A tag");
+    ESP_LOGI("SENSOR", "rc522   | HEALTH | Ready | CS=14 RST=21 SPI=1 MHz | present a 13.56 MHz ISO14443A tag");
     return ESP_OK;
 }
 

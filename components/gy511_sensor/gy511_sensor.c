@@ -25,8 +25,6 @@
 
 #define I2C_TIMEOUT_MS    100
 
-static const char *TAG = "AAI16_GY511";
-
 static i2c_master_dev_handle_t s_accel = NULL;
 static i2c_master_dev_handle_t s_mag = NULL;
 
@@ -95,7 +93,7 @@ esp_err_t gy511_sensor_init(void)
         i2c_bus_manager_get_handle();
 
     if (bus == NULL) {
-        ESP_LOGE(TAG, "I2C bus is not initialized.");
+        ESP_LOGE("SENSOR", "gy511   | ERROR | I2C bus is not initialized.");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -116,7 +114,7 @@ esp_err_t gy511_sensor_init(void)
     );
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Cannot add accelerometer.");
+        ESP_LOGE("SENSOR", "gy511   | ERROR | Cannot add accelerometer.");
         return err;
     }
 
@@ -125,7 +123,7 @@ esp_err_t gy511_sensor_init(void)
     );
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Cannot add magnetometer.");
+        ESP_LOGE("SENSOR", "gy511   | ERROR | Cannot add magnetometer.");
         goto fail;
     }
 
@@ -144,12 +142,12 @@ esp_err_t gy511_sensor_init(void)
         id[1] != 0x34 ||
         id[2] != 0x33) {
 
-        ESP_LOGE(TAG, "Unexpected magnetometer ID.");
+        ESP_LOGE("SENSOR", "gy511   | ERROR | Unexpected magnetometer ID.");
         err = ESP_ERR_INVALID_RESPONSE;
         goto fail;
     }
 
-    ESP_LOGI(TAG, "Magnetometer ID verified: H43");
+    ESP_LOGI("SENSOR", "gy511   | HEALTH | Magnetometer ID verified: H43");
 
     // Accelerometer:
     // 0x88 = BDU, high resolution, +/-2g.
@@ -183,19 +181,19 @@ esp_err_t gy511_sensor_init(void)
     );
     if (err != ESP_OK) goto fail;
 
-    ESP_LOGI(TAG, "GY-511 initialized successfully.");
-    ESP_LOGI(TAG, "Accelerometer: 100 Hz, +/-2g");
-    ESP_LOGI(TAG, "Magnetometer : 30 Hz, +/-1.3 gauss");
+    ESP_LOGI("SENSOR", "gy511   | HEALTH | GY-511 initialized successfully.");
+    ESP_LOGI("SENSOR", "gy511   | HEALTH | Accelerometer: 100 Hz, +/-2g");
+    ESP_LOGI("SENSOR", "gy511   | HEALTH | Magnetometer : 30 Hz, +/-1.3 gauss");
 
     return ESP_OK;
 
 fail:
-    ESP_LOGE(TAG, "GY-511 initialization failed: %s",
+    ESP_LOGE("SENSOR", "gy511   | ERROR | GY-511 initialization failed: %s",
              esp_err_to_name(err));
 
     esp_err_t cleanup_err = gy511_sensor_deinit();
     if (cleanup_err != ESP_OK) {
-        ESP_LOGE(TAG, "Device cleanup failed: %s", esp_err_to_name(cleanup_err));
+        ESP_LOGE("SENSOR", "gy511   | ERROR | Device cleanup failed: %s", esp_err_to_name(cleanup_err));
     }
     return err;
 }
