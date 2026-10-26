@@ -1,6 +1,7 @@
 #include "spi_bus_manager.h"
 
 #include <string.h>
+#include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 
 static bool s_initialized;

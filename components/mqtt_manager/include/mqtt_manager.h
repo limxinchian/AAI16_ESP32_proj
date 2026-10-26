@@ -39,6 +39,19 @@ esp_err_t mqtt_manager_publish_dht22(
     float humidity_pct
 );
 
+// Same zero-wait QoS 0 path as DHT22/GY-511. has_humidity is false for a BMP280;
+// humidity_pct is then ignored and published as JSON null.
+esp_err_t mqtt_manager_publish_bme280(
+    float temperature_c,
+    float pressure_hpa,
+    float humidity_pct,
+    bool has_humidity
+);
+
+// Same zero-wait QoS 0 path as the other polled sensors. Thermocouple-open and
+// framing faults are read failures in Sensor Status, never published as 0 degC.
+esp_err_t mqtt_manager_publish_max6675(float temperature_c);
+
 // Call once per presentation, not per poll. Copies 4/7/10-byte UIDs; uppercase
 // uid_hex has no separators. Separate 8-event FIFO accepts while disconnected,
 // drops newest when full, and expires waiting events after 60000 ms. No flash

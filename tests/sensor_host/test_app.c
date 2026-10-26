@@ -76,6 +76,20 @@ void ld2450_reader_start(void)
     sensor_status_record_init(SENSOR_LD2450, ESP_FAIL);
 }
 TaskHandle_t ld2450_reader_task_handle(void) { return NULL; }
+
+// BME280 is exercised by test_bme280; these scenarios run without it.
+void bme280_reader_start(void)
+{
+    sensor_status_configure(SENSOR_BME280, "bme280", true);
+    sensor_status_record_init(SENSOR_BME280, ESP_FAIL);
+}
+TaskHandle_t bme280_reader_task_handle(void) { return NULL; }
+void max6675_reader_start(void)
+{
+    sensor_status_configure(SENSOR_MAX6675, "max6675", true);
+    sensor_status_record_init(SENSOR_MAX6675, ESP_FAIL);
+}
+TaskHandle_t max6675_reader_task_handle(void) { return NULL; }
 esp_err_t mqtt_manager_init(void) { mqtt_starts++; return ESP_OK; }
 esp_err_t i2c_bus_manager_init(void) { bus_starts++; return bus_init_error; }
 void i2c_bus_manager_scan(void) { scans++; }

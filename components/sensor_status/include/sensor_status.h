@@ -10,6 +10,8 @@ typedef enum {
     SENSOR_GY511,
     SENSOR_RC522,
     SENSOR_LD2450,
+    SENSOR_BME280,
+    SENSOR_MAX6675,
     SENSOR_STATUS_CAPACITY = 8
 } sensor_id_t;
 

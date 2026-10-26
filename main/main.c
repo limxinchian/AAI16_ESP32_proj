@@ -10,6 +10,8 @@
 #include "sensor_status.h"
 #include "rc522_reader.h"
 #include "ld2450_reader.h"
+#include "bme280_reader.h"
+#include "max6675_reader.h"
 #include "sensor_config.h"
 
 #include "esp_err.h"
@@ -239,6 +241,10 @@ void app_main(void)
 
     rc522_reader_start();
     ld2450_reader_start();
+    // The I2C bus is shared with GY-511; each driver takes its own device handle.
+    bme280_reader_start();
+    // SPI2 is shared with the RC522; each driver owns its own device handle/CS.
+    max6675_reader_start();
 
     vTaskDelay(pdMS_TO_TICKS(2000));
 
@@ -267,10 +273,13 @@ void app_main(void)
              mqtt_manager_peek_config_update(&update); ++commands)
         {
             if (update.sensor == SENSOR_GY511 || update.sensor == SENSOR_RC522 ||
-                update.sensor == SENSOR_LD2450) {
+                update.sensor == SENSOR_LD2450 || update.sensor == SENSOR_BME280 ||
+                update.sensor == SENSOR_MAX6675) {
                 TaskHandle_t reader = update.sensor == SENSOR_GY511 ?
                     s_gy511_task : update.sensor == SENSOR_RC522 ?
-                    rc522_reader_task_handle() : ld2450_reader_task_handle();
+                    rc522_reader_task_handle() : update.sensor == SENSOR_LD2450 ?
+                    ld2450_reader_task_handle() : update.sensor == SENSOR_BME280 ?
+                    bme280_reader_task_handle() : max6675_reader_task_handle();
                 if (reader == NULL) {
                     mqtt_manager_take_config_update(&update);
                     (void)mqtt_manager_reject_config(&update, "sensor_unavailable");

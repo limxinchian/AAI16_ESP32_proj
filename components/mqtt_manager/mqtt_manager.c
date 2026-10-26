@@ -31,6 +31,8 @@
 #define GY511_DATA_TOPIC "aai16/sensors/gy511/data"
 #define RC522_EVENT_TOPIC "aai16/sensors/rc522/event"
 #define LD2450_DATA_TOPIC "aai16/sensors/ld2450/data"
+#define BME280_DATA_TOPIC "aai16/sensors/bme280/data"
+#define MAX6675_DATA_TOPIC "aai16/sensors/max6675/data"
 
 #define CONFIG_QUEUE_SIZE 4
 #define MQTT_CONNECTED_BIT BIT0
@@ -72,6 +74,12 @@ static const config_rule_t s_config_rules[] = {
     // Publication period only: at most two replaceable radar samples/second.
     // UART acquisition and the 2 s freshness limit remain independent.
     {SENSOR_LD2450, "ld2450", 500, 10000},
+    // Forced-mode conversion takes ~8 ms; the room-climate signal is slow, so
+    // 500 ms is a generous floor and 1000 ms is the reader's default.
+    {SENSOR_BME280, "bme280", 500, 10000},
+    // One read restarts the chip's ~0.22 s conversion; faster polling only
+    // returns stale values, so 250 ms is the floor.
+    {SENSOR_MAX6675, "max6675", 250, 10000},
 };
 
 static const config_rule_t *config_rule_for_id(sensor_id_t id)
@@ -107,6 +115,8 @@ typedef enum {
     TX_CONFIG_ACK,
     TX_RC522_EVENT,
     TX_LD2450,
+    TX_BME280,
+    TX_MAX6675,
     TX_KIND_COUNT
 } tx_kind_t;
 
@@ -436,7 +446,8 @@ static void mqtt_tx_task(void *arg)
 {
     (void)arg;
     static const char *const topics[TX_KIND_COUNT] = {
-        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC
+        DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC,
+        BME280_DATA_TOPIC, MAX6675_DATA_TOPIC
     };
     tx_message_t message;
     int64_t next_failure_log_us = 0;
@@ -558,7 +569,8 @@ void mqtt_manager_log_diagnostics(void)
     ESP_LOGI(TAG, "  radar_snapshot_updates=%" PRIu32 " coalesced=%" PRIu32
              " invalid_updates=%" PRIu32 " busy_deferrals=%" PRIu32 " pending=%d enabled=%d period_ms=%" PRIu32 " max_age_ms=2000",
              radar_updates, radar_coalesced, radar_invalid, radar_deferred, radar_pending, radar_enabled, radar_interval_ms);
-    static const char *const names[] = {"dht22", "gy511", "config_ack", "rc522_event", "ld2450"};
+    static const char *const names[TX_KIND_COUNT] = {
+        "dht22", "gy511", "config_ack", "rc522_event", "ld2450", "bme280", "max6675"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
         ESP_LOGI(TAG, "%s attempts=%" PRIu32 " queued=%" PRIu32
@@ -1227,6 +1239,73 @@ esp_err_t mqtt_manager_publish_gy511(
         mag_x_ut,
         mag_y_ut,
         mag_z_ut
+    );
+
+    return queue_message(&message);
+}
+
+
+esp_err_t mqtt_manager_publish_bme280(
+    float temperature_c,
+    float pressure_hpa,
+    float humidity_pct,
+    bool has_humidity)
+{
+    uint32_t seq = begin_attempt(TX_BME280);
+    if (!isfinite(temperature_c) || !isfinite(pressure_hpa) ||
+        (has_humidity && !isfinite(humidity_pct))) {
+        count_event(&s_stats[TX_BME280].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    tx_message_t message = {
+        .kind = TX_BME280,
+        .created_ms = esp_timer_get_time() / 1000,
+    };
+
+    // A BMP280 has no humidity channel: publish null, never an invented value.
+    char humidity[16] = "null";
+    if (has_humidity) {
+        snprintf(humidity, sizeof(humidity), "%.1f", humidity_pct);
+    }
+    message.len = snprintf(
+        message.payload,
+        sizeof(message.payload),
+        "{\"sensor\":\"bme280\","
+        "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ","
+        "\"uptime_ms\":%" PRId64 ","
+        "\"temperature_c\":%.2f,"
+        "\"pressure_hpa\":%.2f,"
+        "\"humidity_pct\":%s}",
+        s_boot_id, seq, message.created_ms,
+        temperature_c,
+        pressure_hpa,
+        humidity
+    );
+
+    return queue_message(&message);
+}
+
+
+esp_err_t mqtt_manager_publish_max6675(float temperature_c)
+{
+    uint32_t seq = begin_attempt(TX_MAX6675);
+    if (!isfinite(temperature_c)) {
+        count_event(&s_stats[TX_MAX6675].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    tx_message_t message = {
+        .kind = TX_MAX6675,
+        .created_ms = esp_timer_get_time() / 1000,
+    };
+    message.len = snprintf(
+        message.payload,
+        sizeof(message.payload),
+        "{\"sensor\":\"max6675\","
+        "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ","
+        "\"uptime_ms\":%" PRId64 ","
+        "\"temperature_c\":%.2f}",
+        s_boot_id, seq, message.created_ms,
+        temperature_c
     );
 
     return queue_message(&message);

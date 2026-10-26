@@ -14,6 +14,20 @@ static int quiet_printf(const char *format, ...) { return 0; }
 #include "../../main/ld2450_reader.c"
 #undef printf
 
+// BME280 is exercised by test_bme280; these scenarios run without it.
+void bme280_reader_start(void)
+{
+    sensor_status_configure(SENSOR_BME280, "bme280", true);
+    sensor_status_record_init(SENSOR_BME280, ESP_FAIL);
+}
+TaskHandle_t bme280_reader_task_handle(void) { return NULL; }
+void max6675_reader_start(void)
+{
+    sensor_status_configure(SENSOR_MAX6675, "max6675", true);
+    sensor_status_record_init(SENSOR_MAX6675, ESP_FAIL);
+}
+TaskHandle_t max6675_reader_task_handle(void) { return NULL; }
+
 typedef struct {
     pthread_t thread;
     bool exists, finished, running, notify_wait, notified;
