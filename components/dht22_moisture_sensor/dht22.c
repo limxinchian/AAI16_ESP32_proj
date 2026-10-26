@@ -77,6 +77,9 @@
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#if __has_include("esp_idf_version.h")
+#include "esp_idf_version.h"
+#endif
 
 #define DHT22_RMT_SYMBOLS 64
 #define DHT22_TIMEOUT_MS 100
@@ -139,7 +142,10 @@ esp_err_t dht22_init(gpio_num_t gpio)
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = 1000000,
         .mem_block_symbols = DHT22_RMT_SYMBOLS,
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR < 6
+        // IDF 6 removed this flag; the pin is already INPUT_OUTPUT_OD via gpio_config().
         .flags.io_loop_back = true
+#endif
     };
 
     err = rmt_new_rx_channel(&rx_config, &s_rx);

@@ -9,6 +9,9 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#if __has_include("esp_idf_version.h")
+#include "esp_idf_version.h"
+#endif
 
 typedef struct {
     uint32_t ticks;
@@ -124,9 +127,16 @@ esp_err_t hcsr04p_sensor_init(void)
         .prescale = 1,
         .flags.pos_edge = true,
         .flags.neg_edge = true,
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR < 6
         .flags.pull_down = true, // Disconnected ECHO stays low and times out.
+#endif
     };
     if ((err = mcpwm_new_capture_channel(s_timer, &channel, &s_channel)) != ESP_OK) goto fail;
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR >= 6
+    // IDF 6 dropped the channel pull_down flag and leaves pulls to the GPIO API.
+    // Same behaviour: a disconnected ECHO stays low and times out.
+    if ((err = gpio_set_pull_mode(HCSR04P_ECHO_GPIO, GPIO_PULLDOWN_ONLY)) != ESP_OK) goto fail;
+#endif
     const mcpwm_capture_event_callbacks_t callbacks = {.on_cap = echo_captured};
     if ((err = mcpwm_capture_channel_register_event_callbacks(s_channel, &callbacks, NULL)) != ESP_OK) goto fail;
     if ((err = mcpwm_capture_timer_get_resolution(s_timer, &s_resolution_hz)) != ESP_OK) goto fail;
