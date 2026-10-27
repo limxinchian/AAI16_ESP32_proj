@@ -77,7 +77,7 @@ typedef struct {
 // Adding a configurable sensor requires a rule and an owning application route.
 static const config_rule_t s_config_rules[] = {
     {SENSOR_DHT22, "dht22", 2000, 10000},
-    {SENSOR_GY511, "gy511", 500, 10000},
+    {SENSOR_GY511, "gy511", 100, 10000},
     // Keep the verified 200 ms minimum; cap slow polling at 2 s because both
     // detection latency and the three-idle-poll removal filter scale with it.
     {SENSOR_RC522, "rc522", 200, 2000},
@@ -1516,15 +1516,26 @@ esp_err_t mqtt_manager_publish_gy511(
     float mag_y_ut,
     float mag_z_ut)
 {
+    // Compatibility entry point for callers without acquisition metadata.
+    return mqtt_manager_publish_gy511_at(accel_x_g, accel_y_g, accel_z_g,
+        mag_x_ut, mag_y_ut, mag_z_ut, esp_timer_get_time(), 0);
+}
+
+esp_err_t mqtt_manager_publish_gy511_at(
+    float accel_x_g, float accel_y_g, float accel_z_g,
+    float mag_x_ut, float mag_y_ut, float mag_z_ut,
+    int64_t acquired_us, int64_t jitter_us)
+{
     uint32_t seq = begin_attempt(TX_GY511);
     if (!isfinite(accel_x_g) || !isfinite(accel_y_g) || !isfinite(accel_z_g) ||
-        !isfinite(mag_x_ut) || !isfinite(mag_y_ut) || !isfinite(mag_z_ut)) {
+        !isfinite(mag_x_ut) || !isfinite(mag_y_ut) || !isfinite(mag_z_ut) ||
+        acquired_us < 0 || acquired_us > esp_timer_get_time()) {
         count_event(&s_stats[TX_GY511].invalid);
         return ESP_ERR_INVALID_ARG;
     }
     tx_message_t message = {
         .kind = TX_GY511,
-        .created_ms = esp_timer_get_time() / 1000,
+        .created_ms = acquired_us / 1000,
     };
 
     // Format GY-511 readings as JSON.
@@ -1534,11 +1545,12 @@ esp_err_t mqtt_manager_publish_gy511(
         "{\"sensor\":\"gy511\","
         "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ","
         "\"uptime_ms\":%" PRId64 ","
+        "\"jitter_us\":%" PRId64 ","
         "\"acceleration_g\":{"
         "\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
         "\"magnetic_field_ut\":{"
         "\"x\":%.2f,\"y\":%.2f,\"z\":%.2f}}",
-        s_boot_id, seq, message.created_ms,
+        s_boot_id, seq, message.created_ms, jitter_us,
         accel_x_g,
         accel_y_g,
         accel_z_g,

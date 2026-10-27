@@ -33,7 +33,7 @@ esp_err_t mqtt_manager_init(void);
 // enqueued = SDK outbox acceptance. PUBACK/SDK expiry totals cover both kinds.
 // Neither proves subscriber receipt. See routine diagnostics for all drops.
 // seq counts per-sensor API attempts (including skipped/failed submissions).
-// uptime_ms is successful-read submission time, before either queue.
+// uptime_ms is successful-read submission time unless documented otherwise.
 
 esp_err_t mqtt_manager_publish_dht22(
     float temperature_c,
@@ -143,6 +143,7 @@ esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update,
                                    const char *reason);
 
 
+// Compatibility API: submission timestamp, jitter=0 (not measured).
 esp_err_t mqtt_manager_publish_gy511(
     float accel_x_g,
     float accel_y_g,
@@ -152,6 +153,15 @@ esp_err_t mqtt_manager_publish_gy511(
     float mag_z_ut
 );
 
+// Acquisition owner: same zero-wait QoS0 queue and JSON axes/units. uptime_ms
+// is acquired_us/1000 from the acceleration burst; jitter_us is signed read
+// start minus scheduled deadline. Queue expiry uses acquisition time too.
+// seq counts handoff attempts, NOT failed I2C acquisitions (detect those via
+// timestamp gaps and Sensor Status). Never retry a cached reading.
+esp_err_t mqtt_manager_publish_gy511_at(
+    float accel_x_g, float accel_y_g, float accel_z_g,
+    float mag_x_ut, float mag_y_ut, float mag_z_ut,
+    int64_t acquired_us, int64_t jitter_us);
 
 // One shared four-entry FIFO. Only app_main may peek/remove commands. Peeking
 // allows a busy reader's command to remain queued until its handoff succeeds.
@@ -162,7 +172,7 @@ esp_err_t mqtt_manager_publish_gy511(
 // LD2450 instead keeps draining UART, pausing telemetry and health updates.
 // Previously queued telemetry may still arrive afterward. Re-enable resets the
 // deadline by one retained period; an already enabled sensor keeps its deadline.
-// All six sensors start enabled with default intervals after each boot.
+// All eight sensors start enabled with default intervals after each boot.
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
 bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
 

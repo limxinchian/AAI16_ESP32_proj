@@ -5,5 +5,6 @@ idf_component_register(
     PRIV_REQUIRES
         i2c_bus_manager
         esp_driver_i2c
+        esp_timer
         log
 )

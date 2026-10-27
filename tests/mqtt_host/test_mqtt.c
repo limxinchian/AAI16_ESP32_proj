@@ -368,6 +368,24 @@ int main(void)
     assert(mqtt_manager_publish_gy511(FLT_MAX, FLT_MAX, FLT_MAX,
         FLT_MAX, FLT_MAX, FLT_MAX) == ESP_ERR_INVALID_SIZE);
 
+    // Acquisition metadata must survive queueing and a delayed publisher.
+    int64_t acquired = clock_us - 100000;
+    assert(mqtt_manager_publish_gy511_at(0.123f, -0.456f, 1.001f,
+                                       12, -23, 34, acquired, -1250) == ESP_OK);
+    clock_us += 100000; pump();
+    data = cJSON_Parse(last_payload);
+    assert(data && cJSON_GetObjectItem(data, "uptime_ms")->valuedouble == acquired / 1000);
+    assert(cJSON_GetObjectItem(data, "jitter_us")->valueint == -1250);
+    assert(cJSON_GetObjectItem(cJSON_GetObjectItem(data, "acceleration_g"), "y")->valuedouble == -0.456);
+    cJSON_Delete(data);
+    assert(last_qos == 0);
+    assert(mqtt_manager_publish_gy511_at(0, 0, 1, 0, 0, 0, -1, 0) == ESP_ERR_INVALID_ARG);
+    assert(mqtt_manager_publish_gy511_at(0, 0, 1, 0, 0, 0, clock_us + 1, 0) == ESP_ERR_INVALID_ARG);
+    uint32_t gy_stale = s_stats[TX_GY511].stale;
+    clock_us += 3000000;
+    assert(mqtt_manager_publish_gy511_at(0, 0, 1, 0, 0, 0, clock_us - 2001000, 0) == ESP_OK);
+    pump(); assert(s_stats[TX_GY511].stale == gy_stale + 1);
+
     for (int i = 0; i < TX_QUEUE_SIZE; i++)
         assert(mqtt_manager_publish_dht22(25, 50) == ESP_OK);
     assert(mqtt_manager_publish_dht22(25, 50) == ESP_ERR_NO_MEM);
@@ -503,7 +521,7 @@ int main(void)
         assert(cJSON_GetObjectItem(data, "interval_ms")->valueint == (int)update.interval_ms);
         assert(last_qos == 1); cJSON_Delete(data);
     }
-    const unsigned gy_valid[] = {500, 501, 1000, 2000, 10000};
+    const unsigned gy_valid[] = {100, 101, 499, 500, 501, 1000, 2000, 10000};
     for (unsigned i = 0; i < sizeof(gy_valid) / sizeof(gy_valid[0]); ++i) {
         char payload[100]; mqtt_config_update_t update;
         snprintf(payload, sizeof(payload), "{\"sensor\":\"gy511\",\"interval_ms\":%u}", gy_valid[i]);
@@ -511,12 +529,15 @@ int main(void)
         assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_GY511);
         assert(update.interval_ms == gy_valid[i]);
     }
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":499}", "integer from 500 to 10000");
-    assert(strstr(last_payload, "\"sensor\":\"gy511\"") && strstr(last_payload, "\"interval_ms\":499"));
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":10001}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":500.5}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":-1}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":1e999}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":99}", "integer from 100 to 10000");
+    assert(strstr(last_payload, "\"sensor\":\"gy511\"") && strstr(last_payload, "\"interval_ms\":99"));
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":10001}", "integer from 100 to 10000");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":500.5}", "integer from 100 to 10000");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":-1}", "integer from 100 to 10000");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":0}", "integer from 100 to 10000");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":true}", "missing_or_invalid_interval_ms");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":null}", "missing_or_invalid_interval_ms");
+    rejected("{\"sensor\":\"gy511\",\"interval_ms\":1e999}", "integer from 100 to 10000");
     rejected("{\"sensor\":\"gy511\",\"interval_ms\":\"1000\"}", "missing_or_invalid_interval_ms");
     rejected("{\"sensor\":\"gy511\"}", "missing_configuration_operation");
     rejected("{\"sensor\":\"odd\\\"name\",\"interval_ms\":1000}", "unsupported_sensor");
@@ -656,6 +677,20 @@ int main(void)
     test_hcsr04p_config();
     test_mhz1911a_telemetry();
     test_mhz1911a_config();
+    // The new GY-511 floor must not relax any unrelated sensor's limits.
+    rejected("{\"sensor\":\"bme280\",\"interval_ms\":499}", "integer from 500 to 10000");
+    rejected("{\"sensor\":\"max6675\",\"interval_ms\":249}", "integer from 250 to 10000");
+    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":499}", "integer from 500 to 10000");
+    assert(mqtt_manager_publish_bme280(25, 1013.25f, 50, true) == ESP_OK); pump();
+    assert(!strcmp(last_topic, BME280_DATA_TOPIC) && last_qos == 0);
+    data = cJSON_Parse(last_payload);
+    assert(data && cJSON_GetObjectItem(data, "pressure_hpa")->valuedouble == 1013.25);
+    cJSON_Delete(data);
+    assert(mqtt_manager_publish_max6675(123.25f) == ESP_OK); pump();
+    assert(!strcmp(last_topic, MAX6675_DATA_TOPIC) && last_qos == 0);
+    data = cJSON_Parse(last_payload);
+    assert(data && cJSON_GetObjectItem(data, "temperature_c")->valuedouble == 123.25);
+    cJSON_Delete(data);
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +

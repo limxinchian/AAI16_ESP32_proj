@@ -1,0 +1,187 @@
+{
+  "window_samples": 20,
+  "stride_samples": 10,
+  "gap_limit_ms": 150,
+  "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+  "total_windows": 168,
+  "class_windows": {
+    "REST": 58,
+    "MOVING": 110
+  },
+  "sessions": [
+    {
+      "file": "rest_orientation_01.csv",
+      "sha256": "64df66e093b280fa8ec93fbdae6328f750bdfe0d9d59e1a88bc99789de2a113d",
+      "session_id": "rest_orientation_01",
+      "label": "REST",
+      "rows": 599,
+      "valid_rows": 599,
+      "invalid_rows": [],
+      "boot_ranges": [
+        {
+          "boot_id": "5120e965",
+          "start_ms": 83936,
+          "end_ms": 143736
+        }
+      ],
+      "reboots": 0,
+      "duplicates": 0,
+      "out_of_order": 0,
+      "sequence_gaps": 0,
+      "sampling_gaps": [],
+      "sampling_gap_count": 0,
+      "delta_ms": {
+        "min": 98,
+        "median": 100.0,
+        "max": 102
+      },
+      "axis_statistics": {
+        "x": {
+          "min_g": -0.116,
+          "max_g": -0.094,
+          "std_g": 0.0035509766704000492
+        },
+        "y": {
+          "min_g": 0.125,
+          "max_g": 0.14,
+          "std_g": 0.0024309723948995614
+        },
+        "z": {
+          "min_g": 1.024,
+          "max_g": 1.046,
+          "std_g": 0.00398410726782576
+        }
+      },
+      "possible_saturation_row_indices": [],
+      "constant_axes": [],
+      "constant_windows": 0,
+      "candidate_windows": 58,
+      "usable_windows": 58,
+      "rejected_windows": {},
+      "warnings": []
+    },
+    {
+      "file": "moving_directions_01.csv",
+      "sha256": "1a7e6e000082073d0b52c5c9ee21ad6b61c86f11f2d724e7e272ae724c35dcbc",
+      "session_id": "moving_directions_01",
+      "label": "MOVING",
+      "rows": 598,
+      "valid_rows": 598,
+      "invalid_rows": [],
+      "boot_ranges": [
+        {
+          "boot_id": "5120e965",
+          "start_ms": 427636,
+          "end_ms": 487536
+        }
+      ],
+      "reboots": 0,
+      "duplicates": 0,
+      "out_of_order": 0,
+      "sequence_gaps": 0,
+      "sampling_gaps": [
+        {
+          "row_index": 526,
+          "csv_line": 528,
+          "delta_ms": 199
+        },
+        {
+          "row_index": 579,
+          "csv_line": 581,
+          "delta_ms": 200
+        }
+      ],
+      "sampling_gap_count": 2,
+      "delta_ms": {
+        "min": 98,
+        "median": 100.0,
+        "max": 200
+      },
+      "axis_statistics": {
+        "x": {
+          "min_g": -1.321,
+          "max_g": 0.577,
+          "std_g": 0.22217989574863906
+        },
+        "y": {
+          "min_g": -0.882,
+          "max_g": 1.343,
+          "std_g": 0.2605863431035015
+        },
+        "z": {
+          "min_g": 0.227,
+          "max_g": 1.64,
+          "std_g": 0.18262668251088351
+        }
+      },
+      "possible_saturation_row_indices": [],
+      "constant_axes": [],
+      "constant_windows": 0,
+      "candidate_windows": 58,
+      "usable_windows": 54,
+      "rejected_windows": {
+        "sampling_gap": 4
+      },
+      "warnings": []
+    },
+    {
+      "file": "moving_directions_02.csv",
+      "sha256": "31393ab68737381a9504e02ca0a2184e4f5bbcd99267b4a0518acae8872c999c",
+      "session_id": "moving_directions_02",
+      "label": "MOVING",
+      "rows": 599,
+      "valid_rows": 599,
+      "invalid_rows": [],
+      "boot_ranges": [
+        {
+          "boot_id": "5120e965",
+          "start_ms": 621536,
+          "end_ms": 681436
+        }
+      ],
+      "reboots": 0,
+      "duplicates": 0,
+      "out_of_order": 0,
+      "sequence_gaps": 0,
+      "sampling_gaps": [
+        {
+          "row_index": 202,
+          "csv_line": 204,
+          "delta_ms": 201
+        }
+      ],
+      "sampling_gap_count": 1,
+      "delta_ms": {
+        "min": 99,
+        "median": 100.0,
+        "max": 201
+      },
+      "axis_statistics": {
+        "x": {
+          "min_g": -0.461,
+          "max_g": 0.486,
+          "std_g": 0.14355499470556565
+        },
+        "y": {
+          "min_g": -0.269,
+          "max_g": 0.909,
+          "std_g": 0.18490666136087672
+        },
+        "z": {
+          "min_g": 0.324,
+          "max_g": 1.571,
+          "std_g": 0.20562773964406625
+        }
+      },
+      "possible_saturation_row_indices": [],
+      "constant_axes": [],
+      "constant_windows": 0,
+      "candidate_windows": 58,
+      "usable_windows": 56,
+      "rejected_windows": {
+        "sampling_gap": 2
+      },
+      "warnings": []
+    }
+  ]
+}

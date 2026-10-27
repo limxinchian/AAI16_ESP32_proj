@@ -5,8 +5,8 @@
 
 int main(void)
 {
-    const char *names[] = {"dht22", "gy511", "rc522", "ld2450", "hcsr04p"};
-    for (sensor_id_t id = SENSOR_DHT22; id <= SENSOR_HCSR04P; ++id) {
+    const char *names[] = {"dht22", "gy511", "rc522", "ld2450", "hcsr04p", "mhz1911a", "bme280", "max6675"};
+    for (sensor_id_t id = SENSOR_DHT22; id < SENSOR_STATUS_CAPACITY; ++id) {
         sensor_status_configure(id, names[id], true);
         sensor_status_record_init(id, ESP_OK);
         unsigned errors = test_error_logs, recoveries = test_recovery_logs;
@@ -50,14 +50,14 @@ int main(void)
     assert(test_error_logs == errors + 1);
     test_now_us = 80000000;
     sensor_status_log_summary();
-    assert(test_summary_logs == 11);
+    assert(test_summary_logs == 1 + 2 * SENSOR_STATUS_CAPACITY);
     assert(test_logs_contain("HEALTH SUMMARY | counters=cumulative"));
     assert(test_logs_contain("state=READY ok=52 failed=82 consecutive=0"));
     assert(test_logs_contain("transitions_coalesced_total=100"));
     sensor_status_log_summary();
-    assert(test_summary_logs == 11);
+    assert(test_summary_logs == 1 + 2 * SENSOR_STATUS_CAPACITY);
     test_now_us += 60000000;
     sensor_status_log_summary();
-    assert(test_summary_logs == 22);
-    puts("PASS: five-sensor error/recovery severity, persistent faults, bounded flapping, counters and health cadence");
+    assert(test_summary_logs == 2 * (1 + 2 * SENSOR_STATUS_CAPACITY));
+    puts("PASS: eight-sensor error/recovery severity, persistent faults, bounded flapping, counters and health cadence");
 }

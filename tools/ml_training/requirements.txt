@@ -1,0 +1,5 @@
+# Install only in tools/ml_training/.venv (Python 3.12), never the ESP-IDF venv.
+tensorflow==2.20.0
+keras==3.11.3
+numpy==2.2.6
+protobuf==5.29.5

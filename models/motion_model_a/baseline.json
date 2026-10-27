@@ -1,0 +1,41 @@
+{
+  "statistic": "sqrt(mean_t(sum_axis((a_g-mean_t(a_g))^2)))",
+  "units": "g",
+  "moving_if": "rms_g >= threshold_g",
+  "threshold_g": 0.08883622916580566,
+  "fit_data": "training sessions only",
+  "selection": "maximum training balanced accuracy; median-index candidate among ties",
+  "training_sanity": {
+    "samples": 168,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        58,
+        0
+      ],
+      [
+        0,
+        110
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "per_class": {
+      "REST": {
+        "support": 58,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "MOVING": {
+        "support": 110,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  }
+}

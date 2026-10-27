@@ -43,7 +43,8 @@ for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_bme2
                   "dht_reads", "dht_missing", "gy_reads", "gy_overrun", "healthy_config", "healthy_flood",
                   "unavailable_flood"] if name == "test_app" else [None])
     if name == "test_runtime":
-        scenarios = ["default", "changes", "mixed", "burst", "shorten", "rounding",
+        scenarios = ["ml_eight", "ml_overrun", "ml_failures", "ml_gates", "ml_rounding", "ml_wrap", "ml_jitter",
+                     "default", "changes", "mixed", "burst", "shorten", "rounding",
                      "during_read", "gy_unavailable", "gy_task_failure", "dht_unavailable", "tick_wrap",
                      "gate_gy", "gate_dht", "gate_both", "gate_burst", "gate_preempt", "gate_read",
                      "gate_dht_read", "gate_gy_unavailable", "gate_task_unavailable", "gate_dht_unavailable",

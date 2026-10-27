@@ -116,15 +116,17 @@ esp_err_t gy511_sensor_read(gy511_data_t *data)
     gy_times[gy_reads++] = test_now_us;
     if (gy_overrun && gy_reads == 1) test_now_us += 700000;
     if (read_failures && (gy_reads <= 2 || gy_reads == 5)) return ESP_ERR_TIMEOUT;
-    *data = (gy511_data_t){.accel_x_g = 1, .mag_x_ut = 10};
+    *data = (gy511_data_t){.accel_x_g = 1, .mag_x_ut = 10, .acquired_us = test_now_us};
     return ESP_OK;
 }
 esp_err_t mqtt_manager_publish_dht22(float temperature, float humidity)
 {
     assert(temperature == 25 && humidity == 50); dht_publications++; return ESP_OK;
 }
-esp_err_t mqtt_manager_publish_gy511(float ax, float ay, float az, float mx, float my, float mz)
+esp_err_t mqtt_manager_publish_gy511_at(float ax, float ay, float az, float mx, float my, float mz,
+                                       int64_t acquired_us, int64_t jitter_us)
 {
+    assert(acquired_us == test_now_us && jitter_us == 0);
     assert(ax == 1 && mx == 10); gy_publications++; return ESP_OK;
 }
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *update)
@@ -217,13 +219,14 @@ int main(int argc, char **argv)
             assert(!dht_reads && !dht_publications && !applied_acks && !test_config_logs);
             assert(dht.state == SENSOR_UNAVAILABLE && dht.error_stage == SENSOR_STAGE_INIT);
             assert(!dht.initialized && !dht.read_failures && dht.last_success_us == -1);
-            assert(diagnostics_calls == 1230 && test_summary_logs == 39);
+            assert(diagnostics_calls == 1230 && test_summary_logs == 3 * (1 + 2 * SENSOR_STATUS_CAPACITY));
             assert(commands_taken == (command_flood ? 4 * diagnostics_calls : 1));
             assert(rejected_acks == commands_taken);
         } else if (dht_missing) {
             assert(dht_reads == 62 && !dht_publications && diagnostics_calls == dht_reads);
             assert(dht.state == SENSOR_DEGRADED && dht.read_failures == 62 && dht.consecutive_failures == 62);
-            assert(test_error_logs == 1 && test_recovery_logs == 0 && test_summary_logs == 39);
+            assert(test_error_logs == 1 && test_recovery_logs == 0 &&
+                   test_summary_logs == 3 * (1 + 2 * SENSOR_STATUS_CAPACITY));
             assert(test_logs_contain("invalid_total=61") && test_logs_contain("jitter_violations_total=0"));
             assert(!test_logs_contain("dht22   | DATA |"));
             for (unsigned i = 0; i < dht_reads; ++i) assert(dht_times[i] == 2000000 + i * 2000000LL);

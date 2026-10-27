@@ -1,0 +1,306 @@
+{
+  "model_version": "aai16-motion-model-a-0.1.0",
+  "created_utc": "2026-10-27T18:21:32.890104+00:00",
+  "git_branch": "feature/ml-gy511-data-collection",
+  "git_head": "ed28c75467f87f61a0368c9d9a70f1eb7353dae8",
+  "git_working_tree": "uncommitted implementation; source hashes identify training code",
+  "python": "3.12.10",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "tensorflow": "2.20.0",
+  "keras": "3.11.3",
+  "numpy": "2.2.6",
+  "training": {
+    "seed": 20261028,
+    "epochs": 150,
+    "batch_size": 16,
+    "optimizer": "Adam",
+    "learning_rate": 0.001,
+    "optimizer_config": {
+      "name": "adam",
+      "learning_rate": 0.0010000000474974513,
+      "weight_decay": null,
+      "clipnorm": null,
+      "global_clipnorm": null,
+      "clipvalue": null,
+      "use_ema": false,
+      "ema_momentum": 0.99,
+      "ema_overwrite_frequency": null,
+      "loss_scale_factor": null,
+      "gradient_accumulation_steps": null,
+      "beta_1": 0.9,
+      "beta_2": 0.999,
+      "epsilon": 1e-07,
+      "amsgrad": false
+    },
+    "loss": "SparseCategoricalCrossentropy(from_logits=True)",
+    "class_weights": {
+      "REST": 1.4482758620689655,
+      "MOVING": 0.7636363636363637
+    },
+    "shuffle": "NumPy default_rng(seed).permutation per epoch, training windows only",
+    "validation_split": null,
+    "early_stopping": false,
+    "checkpoint_selection": "fixed final epoch",
+    "deterministic_ops": true,
+    "cpu_only": true,
+    "oneDNN": false,
+    "inter_op_threads": 1,
+    "intra_op_threads": 1,
+    "architecture": "60 -> Dense(16, ReLU) -> Dense(2, linear logits)",
+    "parameters": 1010
+  },
+  "dataset": {
+    "window_samples": 20,
+    "stride_samples": 10,
+    "gap_limit_ms": 150,
+    "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+    "total_windows": 168,
+    "class_windows": {
+      "REST": 58,
+      "MOVING": 110
+    },
+    "sessions": [
+      {
+        "file": "rest_orientation_01.csv",
+        "sha256": "64df66e093b280fa8ec93fbdae6328f750bdfe0d9d59e1a88bc99789de2a113d",
+        "session_id": "rest_orientation_01",
+        "label": "REST",
+        "rows": 599,
+        "valid_rows": 599,
+        "invalid_rows": [],
+        "boot_ranges": [
+          {
+            "boot_id": "5120e965",
+            "start_ms": 83936,
+            "end_ms": 143736
+          }
+        ],
+        "reboots": 0,
+        "duplicates": 0,
+        "out_of_order": 0,
+        "sequence_gaps": 0,
+        "sampling_gaps": [],
+        "sampling_gap_count": 0,
+        "delta_ms": {
+          "min": 98,
+          "median": 100.0,
+          "max": 102
+        },
+        "axis_statistics": {
+          "x": {
+            "min_g": -0.116,
+            "max_g": -0.094,
+            "std_g": 0.0035509766704000492
+          },
+          "y": {
+            "min_g": 0.125,
+            "max_g": 0.14,
+            "std_g": 0.0024309723948995614
+          },
+          "z": {
+            "min_g": 1.024,
+            "max_g": 1.046,
+            "std_g": 0.00398410726782576
+          }
+        },
+        "possible_saturation_row_indices": [],
+        "constant_axes": [],
+        "constant_windows": 0,
+        "candidate_windows": 58,
+        "usable_windows": 58,
+        "rejected_windows": {},
+        "warnings": []
+      },
+      {
+        "file": "moving_directions_01.csv",
+        "sha256": "1a7e6e000082073d0b52c5c9ee21ad6b61c86f11f2d724e7e272ae724c35dcbc",
+        "session_id": "moving_directions_01",
+        "label": "MOVING",
+        "rows": 598,
+        "valid_rows": 598,
+        "invalid_rows": [],
+        "boot_ranges": [
+          {
+            "boot_id": "5120e965",
+            "start_ms": 427636,
+            "end_ms": 487536
+          }
+        ],
+        "reboots": 0,
+        "duplicates": 0,
+        "out_of_order": 0,
+        "sequence_gaps": 0,
+        "sampling_gaps": [
+          {
+            "row_index": 526,
+            "csv_line": 528,
+            "delta_ms": 199
+          },
+          {
+            "row_index": 579,
+            "csv_line": 581,
+            "delta_ms": 200
+          }
+        ],
+        "sampling_gap_count": 2,
+        "delta_ms": {
+          "min": 98,
+          "median": 100.0,
+          "max": 200
+        },
+        "axis_statistics": {
+          "x": {
+            "min_g": -1.321,
+            "max_g": 0.577,
+            "std_g": 0.22217989574863906
+          },
+          "y": {
+            "min_g": -0.882,
+            "max_g": 1.343,
+            "std_g": 0.2605863431035015
+          },
+          "z": {
+            "min_g": 0.227,
+            "max_g": 1.64,
+            "std_g": 0.18262668251088351
+          }
+        },
+        "possible_saturation_row_indices": [],
+        "constant_axes": [],
+        "constant_windows": 0,
+        "candidate_windows": 58,
+        "usable_windows": 54,
+        "rejected_windows": {
+          "sampling_gap": 4
+        },
+        "warnings": []
+      },
+      {
+        "file": "moving_directions_02.csv",
+        "sha256": "31393ab68737381a9504e02ca0a2184e4f5bbcd99267b4a0518acae8872c999c",
+        "session_id": "moving_directions_02",
+        "label": "MOVING",
+        "rows": 599,
+        "valid_rows": 599,
+        "invalid_rows": [],
+        "boot_ranges": [
+          {
+            "boot_id": "5120e965",
+            "start_ms": 621536,
+            "end_ms": 681436
+          }
+        ],
+        "reboots": 0,
+        "duplicates": 0,
+        "out_of_order": 0,
+        "sequence_gaps": 0,
+        "sampling_gaps": [
+          {
+            "row_index": 202,
+            "csv_line": 204,
+            "delta_ms": 201
+          }
+        ],
+        "sampling_gap_count": 1,
+        "delta_ms": {
+          "min": 99,
+          "median": 100.0,
+          "max": 201
+        },
+        "axis_statistics": {
+          "x": {
+            "min_g": -0.461,
+            "max_g": 0.486,
+            "std_g": 0.14355499470556565
+          },
+          "y": {
+            "min_g": -0.269,
+            "max_g": 0.909,
+            "std_g": 0.18490666136087672
+          },
+          "z": {
+            "min_g": 0.324,
+            "max_g": 1.571,
+            "std_g": 0.20562773964406625
+          }
+        },
+        "possible_saturation_row_indices": [],
+        "constant_axes": [],
+        "constant_windows": 0,
+        "candidate_windows": 58,
+        "usable_windows": 56,
+        "rejected_windows": {
+          "sampling_gap": 2
+        },
+        "warnings": []
+      }
+    ]
+  },
+  "weights_sha256": "ed4614c605ab29c99ee616794ad8cf130899b1ba22a631ebe568b149f00b121a",
+  "source_sha256": {
+    "data.py": "ba40377d9ea72bcaf3e7996f5a770f496e77a8b4f9b0fea1443491d02e7d74a3",
+    "runtime.py": "c8b3d560fa76d940bb9bd9cb4ccb204f41b320ae2c30a15c40ba841b5d84cf5b",
+    "train.py": "4eac599e8a33702bad872fb2434144711cc351b9645b0e1c4b97091b7e4a7d1b",
+    "evaluate.py": "cf40714540ee22a3ba289933216bc360f29a7a749472a433b417f117bb1ae913",
+    "requirements.txt": "86a664e9d820ce24ed2c2ee9bb0caa1c5ab63f5bdfb8dbda539756cd1e3fc07d",
+    "setup_env.py": "e597619a87552baf872c84395518c3c47f8d43b57ac2b1ca91368c8a708563ac"
+  },
+  "artifacts": {
+    "baseline.json": {
+      "sha256": "904a44cd38dd23072f34f2cc981ae4d4dd67b958aa8226d3374e96f995a955f7",
+      "bytes": 879
+    },
+    "dataset_report.json": {
+      "sha256": "6efcdd0bf4c48e11bd2590adfc47d29f2114a6a6dccfa07fb6923bf42ee3bd95",
+      "bytes": 4623
+    },
+    "environment.lock.txt": {
+      "sha256": "83574e0ff0853b296392f9d21d7ffc4b3ca7a214a1effc01214b18fbe1c4ce6d",
+      "bytes": 684
+    },
+    "golden_vectors.json": {
+      "sha256": "0ce4cf29aff0edb2c9f10fe677d24b0693f7107eb03d75776eb781ff4daf0f29",
+      "bytes": 21123
+    },
+    "input_contract.json": {
+      "sha256": "e036fdc6e8323334050a7a29daad62687de9a891193f26fde1953fbfbcccc294",
+      "bytes": 1341
+    },
+    "model.keras": {
+      "sha256": "0922fb3deed29858a5d3171d64ef59382047f39b0b5160fe12743346c97aa872",
+      "bytes": 33360
+    },
+    "MODEL_CARD.md": {
+      "sha256": "a3c33fc172a6df8ce1ff77111a4dc56b74693e1f342c67dd50dd1faa777ccb33",
+      "bytes": 1536
+    },
+    "model_float32.tflite": {
+      "sha256": "e1e795767dba3157ff4ade990e132bd1ece9e1c2579ef24945fb9780a008a723",
+      "bytes": 5500
+    },
+    "model_int8.tflite": {
+      "sha256": "1885f051bb81daa9f4f8ff12ee39a0706ac4d45999b823ef91ade991e5a4b7aa",
+      "bytes": 3104
+    },
+    "quantization.json": {
+      "sha256": "cb2f83eb2c549f83981ca424f9dd86aa9497ff70240f6b9e5e9eab2546bb8c74",
+      "bytes": 9035
+    },
+    "test_vectors.npz": {
+      "sha256": "89c3c8bbe752609b60a4fa9d51fab80fe822edf070ac84d3dc6b56ea4ae1d799",
+      "bytes": 53581
+    },
+    "training_history.csv": {
+      "sha256": "0f8e5a4ba66fea87fe20a7fa25320f819b7a9cc848a70e0fab192a915bf64bd7",
+      "bytes": 4927
+    },
+    "training_report.json": {
+      "sha256": "3e2d87c2bd69529113176c52ce05d92745ddb50a460fcc7feaf2aaa8f7ef77d2",
+      "bytes": 3192
+    },
+    "window_predictions.csv": {
+      "sha256": "7f456774d6cce765799f13effa3d2be5d2cf8e2fccbc74fc0a61fb48c1df429b",
+      "bytes": 20756
+    }
+  }
+}

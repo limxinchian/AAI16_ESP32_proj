@@ -92,39 +92,43 @@ int main(void)
     assert(outbox_get_size(client.outbox) == 0);
 
     // Deterministic 15-minute quiet-broker scenario: one queued send per
-    // 1000 ms idle read poll, with a 500 ms GY-511 and 2000 ms DHT22 producer.
+    // 1000 ms idle read poll, with 500/100 ms GY-511 and 2000 ms DHT22 producers.
     // This models the observed SDK branch; it does not emulate network/RTOS timing.
     const char *topics[] = {"aai16/sensors/dht22/data", "aai16/sensors/gy511/data"};
     const char *payloads[] = {
         "{\"sensor\":\"dht22\",\"boot_id\":\"12345678\",\"seq\":1000,\"uptime_ms\":600000,\"temperature_c\":27.0,\"humidity_pct\":59.1}",
         "{\"sensor\":\"gy511\",\"boot_id\":\"12345678\",\"seq\":1000,\"uptime_ms\":600000,\"acceleration_g\":{\"x\":0.123,\"y\":0.123,\"z\":1.001},\"magnetic_field_ut\":{\"x\":12.34,\"y\":12.34,\"z\":12.34}}"
     };
-    for (int direct = 0; direct <= 1; direct++) {
-        clear_outbox(&client);
-        writes = 0;
-        int admitted = 0, rejected = 0, expired = 0;
-        uint64_t peak = 0;
-        for (now_ms = 0; now_ms < 900000; now_ms += 500) {
-            for (int sensor = 0; sensor < 2; sensor++) {
-                if (sensor == 0 && now_ms % 2000) continue;
-                int size = strlen(payloads[sensor]);
-                if (!direct && outbox_get_size(client.outbox) + size + 64 > 4096 - 1024) {
-                    rejected++;
-                } else {
-                    int result = direct
-                        ? esp_mqtt_client_publish(&client, topics[sensor], payloads[sensor], size, 0, 0)
-                        : esp_mqtt_client_enqueue(&client, topics[sensor], payloads[sensor], size, 0, 0, true);
-                    assert(result == 0); admitted++;
+    const int intervals_ms[] = {500, 100};
+    for (unsigned rate = 0; rate < 2; ++rate) {
+        int interval_ms = intervals_ms[rate];
+        for (int direct = 0; direct <= 1; direct++) {
+            clear_outbox(&client);
+            writes = 0;
+            int admitted = 0, rejected = 0, expired = 0;
+            uint64_t peak = 0;
+            for (now_ms = 0; now_ms < 900000; now_ms += interval_ms) {
+                for (int sensor = 0; sensor < 2; sensor++) {
+                    if (sensor == 0 && now_ms % 2000) continue;
+                    int size = strlen(payloads[sensor]);
+                    if (!direct && outbox_get_size(client.outbox) + size + 64 > 4096 - 1024) {
+                        rejected++;
+                    } else {
+                        int result = direct
+                            ? esp_mqtt_client_publish(&client, topics[sensor], payloads[sensor], size, 0, 0)
+                            : esp_mqtt_client_enqueue(&client, topics[sensor], payloads[sensor], size, 0, 0, true);
+                        assert(result == 0); admitted++;
+                    }
                 }
+                if (outbox_get_size(client.outbox) > peak) peak = outbox_get_size(client.outbox);
+                while (outbox_delete_single_expired(client.outbox, now_ms, 30000) >= 0) expired++;
+                if (now_ms % SDK_IDLE_POLL_MS == 0) sdk_drain_one_queued(&client);
             }
-            if (outbox_get_size(client.outbox) > peak) peak = outbox_get_size(client.outbox);
-            while (outbox_delete_single_expired(client.outbox, now_ms, 30000) >= 0) expired++;
-            if (now_ms % SDK_IDLE_POLL_MS == 0) sdk_drain_one_queued(&client);
+            printf("SDK quiet-broker model (%s, GY=%d ms): admitted=%d rejected=%d writes=%d peak=%" PRIu64 " expired=%d\n",
+                   direct ? "direct QoS0" : "stored QoS0", interval_ms, admitted, rejected, writes, peak, expired);
+            if (direct) assert(admitted == 900000 / interval_ms + 450 && writes == admitted && rejected == 0 && peak == 0);
+            else assert(rejected > 1000 && peak <= 3072 && peak > 2800 && writes == 900 && expired == 0);
         }
-        printf("SDK quiet-broker model (%s): admitted=%d rejected=%d writes=%d peak=%" PRIu64 " expired=%d\n",
-               direct ? "direct QoS0" : "stored QoS0", admitted, rejected, writes, peak, expired);
-        if (direct) assert(admitted == 2250 && writes == 2250 && rejected == 0 && peak == 0);
-        else assert(rejected > 1000 && peak <= 3072 && peak > 2800 && writes == 900 && expired == 0);
     }
     // Outbox exhaustion is still enforced for ACKs; QoS 0 does not compete.
     int result, baseline_ack_count = 0;

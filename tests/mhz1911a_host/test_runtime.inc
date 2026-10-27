@@ -102,7 +102,7 @@ static void test_co2_isolation(const char *scenario)
     }
     sensor_status_t s;
     assert(sensor_status_get(SENSOR_MHZ1911A, &s));
-    assert(!sensor_status_get((sensor_id_t)6, &s));
+    assert(!sensor_status_get((sensor_id_t)SENSOR_STATUS_CAPACITY, &s));
     assert(co2_inits == (co2_task_failure ? 0U : 1U));
     assert(co2_handoffs == co2_ok);
     if (co2_task_failure || co2_init_failure) {

@@ -7,6 +7,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #define GY511_ACCEL_ADDR  0x19
 #define GY511_MAG_ADDR    0x1E
@@ -14,6 +15,7 @@
 // Accelerometer registers
 #define ACC_CTRL_REG1     0x20
 #define ACC_CTRL_REG4     0x23
+#define ACC_STATUS_REG    0x27
 #define ACC_OUT_X_L       0x28
 
 // Magnetometer registers
@@ -181,6 +183,20 @@ esp_err_t gy511_sensor_init(void)
     );
     if (err != ESP_OK) goto fail;
 
+    // Verify the settings that define units, coherence and conversion rates.
+    // A successful I2C write alone does not prove the requested ODR is active.
+    const uint8_t regs[] = {ACC_CTRL_REG1, ACC_CTRL_REG4, MAG_CRA_REG};
+    const uint8_t expected[] = {0x57, 0x88, 0x14};
+    for (unsigned i = 0; i < sizeof(regs); ++i) {
+        uint8_t value = 0;
+        err = read_regs(i < 2 ? s_accel : s_mag, regs[i], &value, 1);
+        if (err != ESP_OK) goto fail;
+        if (value != expected[i]) {
+            err = ESP_ERR_INVALID_RESPONSE;
+            goto fail;
+        }
+    }
+
     ESP_LOGI("SENSOR", "gy511   | HEALTH | GY-511 initialized successfully.");
     ESP_LOGI("SENSOR", "gy511   | HEALTH | Accelerometer: 100 Hz, +/-2g");
     ESP_LOGI("SENSOR", "gy511   | HEALTH | Magnetometer : 30 Hz, +/-1.3 gauss");
@@ -229,9 +245,15 @@ esp_err_t gy511_sensor_read(gy511_data_t *data)
 
     uint8_t accel[6] = {0};
     uint8_t mag[6] = {0};
+    uint8_t status = 0;
+    esp_err_t err = read_regs(s_accel, ACC_STATUS_REG, &status, 1);
+    if (err != ESP_OK) return err;
+    // Equal numerical readings are legitimate at rest. Freshness comes from
+    // the hardware data-ready bit, never from comparing successive values.
+    if (!(status & 0x08)) return ESP_ERR_INVALID_STATE;
 
     // Accelerometer: auto-increment enabled.
-    esp_err_t err = read_regs(
+    err = read_regs(
         s_accel,
         ACC_OUT_X_L | 0x80,
         accel,
@@ -241,6 +263,7 @@ esp_err_t gy511_sensor_read(gy511_data_t *data)
     if (err != ESP_OK) {
         return err;
     }
+    gy511_data_t reading = {.acquired_us = esp_timer_get_time()};
 
     // Magnetometer has automatic address increment.
     err = read_regs(
@@ -262,9 +285,9 @@ esp_err_t gy511_sensor_read(gy511_data_t *data)
 
     // +/-2g high-resolution sensitivity:
     // 1 mg per 12-bit count.
-    data->accel_x_g = (float)ax / 16000.0f;
-    data->accel_y_g = (float)ay / 16000.0f;
-    data->accel_z_g = (float)az / 16000.0f;
+    reading.accel_x_g = (float)ax / 16000.0f;
+    reading.accel_y_g = (float)ay / 16000.0f;
+    reading.accel_z_g = (float)az / 16000.0f;
 
     // Magnetometer uses big-endian X, Z, Y order.
     int16_t mx = decode_be16(mag[0], mag[1]);
@@ -279,9 +302,10 @@ esp_err_t gy511_sensor_read(gy511_data_t *data)
     // At +/-1.3 gauss:
     // X/Y = 1100 LSB/gauss, Z = 980 LSB/gauss.
     // 1 gauss = 100 microtesla.
-    data->mag_x_ut = (float)mx * 100.0f / 1100.0f;
-    data->mag_y_ut = (float)my * 100.0f / 1100.0f;
-    data->mag_z_ut = (float)mz * 100.0f / 980.0f;
+    reading.mag_x_ut = (float)mx * 100.0f / 1100.0f;
+    reading.mag_y_ut = (float)my * 100.0f / 1100.0f;
+    reading.mag_z_ut = (float)mz * 100.0f / 980.0f;
+    *data = reading;
 
     return ESP_OK;
 }

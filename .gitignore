@@ -82,3 +82,7 @@ Desktop.ini
 
 /components/wifi_manager/wifi_credentials.h
 /components/mqtt_manager/mqtt_credentials.h
+
+# Local ML recordings and broker settings (never commit credentials).
+/tools/ml_data_collection/recordings/
+/tools/ml_data_collection/.env

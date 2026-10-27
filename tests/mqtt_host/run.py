@@ -33,7 +33,9 @@ source = source.replace('#include "mqtt_credentials.h"', '''// Host test constan
 #define MQTT_PASSWORD "test"
 ''')
 (output / "mqtt_manager_under_test.c").write_text(source)
-cjson = Path(args.idf_path) / "components/json/cJSON"
+cjson = repo / "managed_components/espressif__cjson/cJSON"
+if not (cjson / "cJSON.c").is_file():
+    cjson = Path(args.idf_path) / "components/json/cJSON"
 binary = output / ("test_mqtt.exe" if os.name == "nt" else "test_mqtt")
 compiler = shutil.which(args.cc)
 if not compiler:
@@ -51,7 +53,10 @@ subprocess.run([str(binary)], check=True)
 
 # Exercise real installed ESP-MQTT code as well as manager API doubles. This
 # avoids a mock accidentally promising behaviour the SDK does not implement.
-sdk = Path(args.idf_path) / "components/mqtt/esp-mqtt"
+sdk = repo / "managed_components/espressif__mqtt"
+if not (sdk / "mqtt_client.c").is_file():
+    sdk = Path(args.idf_path) / "components/mqtt/esp-mqtt"
+print(f"Testing MQTT SDK source: {sdk}", flush=True)
 sdk_output = output / "sdk"
 sdk_output.mkdir(exist_ok=True)
 for name in ["platform.h", "mqtt_client.h", "mqtt_config.h", "esp_err.h", "esp_log.h", "esp_heap_caps.h"]:

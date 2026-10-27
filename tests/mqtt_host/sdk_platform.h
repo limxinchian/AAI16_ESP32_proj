@@ -20,6 +20,8 @@ typedef int esp_err_t;
 #define ESP_LOGE ESP_LOGD
 #define ESP_MEM_CHECK(tag, value, on_error) do { if (!(value)) { on_error; } } while (0)
 #define heap_caps_malloc(size, caps) malloc(size)
+#define heap_caps_calloc(count, size, caps) calloc(count, size)
+#define MQTT_BUFFER_MEMORY 0
 #define MQTT_OUTBOX_MEMORY 0
 #define MQTT_MSG_ID_INCREMENTAL 1
 #define MQTT_SKIP_PUBLISH_IF_DISCONNECTED 0

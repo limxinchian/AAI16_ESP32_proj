@@ -42,13 +42,15 @@ static void gy511_reader_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(100));
     TickType_t next_due = xTaskGetTickCount();
     TickType_t last_sample = next_due;
+    int64_t next_due_us = esp_timer_get_time();
+    int64_t last_sample_us = next_due_us;
     uint32_t active_interval_ms = GY511_SAMPLE_MS;
     TickType_t period = pdMS_TO_TICKS(GY511_SAMPLE_MS);
     uint32_t control = 0;
     bool pending_update = false;
     int64_t next_log_us = 0;
     uint32_t reads = 0, ok = 0, overruns = 0;
-    int64_t max_read_us = 0;
+    int64_t max_read_us = 0, max_jitter_us = 0;
     int64_t next_health_us = esp_timer_get_time() + HEALTH_INTERVAL_US;
 
     while (1) {
@@ -79,7 +81,9 @@ static void gy511_reader_task(void *arg)
                     // Fresh anchor: no catch-up reads, and repeated enables do
                     // not keep moving the deadline. Retain the configured period.
                     last_sample = xTaskGetTickCount();
+                    last_sample_us = esp_timer_get_time();
                     next_due = last_sample + period;
+                    next_due_us = last_sample_us + (int64_t)period * portTICK_PERIOD_MS * 1000;
                 }
                 ESP_LOGI("SENSOR", "gy511   | HEALTH | config_enabled=%s", update.enabled ? "true" : "false");
             } else {
@@ -88,8 +92,12 @@ static void gy511_reader_task(void *arg)
                 period = pdMS_TO_TICKS(active_interval_ms + portTICK_PERIOD_MS - 1);
                 // Repeated commands cannot postpone acquisition indefinitely.
                 next_due = last_sample + period;
+                next_due_us = last_sample_us + (int64_t)period * portTICK_PERIOD_MS * 1000;
                 TickType_t now = xTaskGetTickCount();
-                if ((int32_t)(next_due - now) < 0) next_due = now;
+                if ((int32_t)(next_due - now) < 0) {
+                    next_due = now;
+                    next_due_us = esp_timer_get_time();
+                }
                 ESP_LOGI("SENSOR", "gy511   | HEALTH | config_period_ms=%lu",
                        (unsigned long)active_interval_ms);
             }
@@ -113,6 +121,12 @@ static void gy511_reader_task(void *arg)
         last_sample = now;
         gy511_data_t reading = {0};
         int64_t start_us = esp_timer_get_time();
+        // Signed start-time error against the scheduled deadline, in us.
+        // Includes RTOS tick quantization; no fabricated acquisition timestamps.
+        int64_t jitter_us = start_us - next_due_us;
+        int64_t abs_jitter_us = jitter_us < 0 ? -jitter_us : jitter_us;
+        if (abs_jitter_us > max_jitter_us) max_jitter_us = abs_jitter_us;
+        last_sample_us = start_us;
         esp_err_t err = gy511_sensor_read(&reading);
         int64_t completed_us = esp_timer_get_time();
         int64_t read_us = completed_us - start_us;
@@ -122,9 +136,10 @@ static void gy511_reader_task(void *arg)
         if (err == ESP_OK) {
             ok++;
             // Zero-wait handoff. Failures appear in MQTT diagnostics.
-            (void)mqtt_manager_publish_gy511(
+            (void)mqtt_manager_publish_gy511_at(
                 reading.accel_x_g, reading.accel_y_g, reading.accel_z_g,
-                reading.mag_x_ut, reading.mag_y_ut, reading.mag_z_ut);
+                reading.mag_x_ut, reading.mag_y_ut, reading.mag_z_ut,
+                reading.acquired_us, jitter_us);
         }
         int64_t now_us = esp_timer_get_time();
         if (err == ESP_OK && now_us >= next_log_us) {
@@ -138,16 +153,19 @@ static void gy511_reader_task(void *arg)
             ESP_LOGI("SENSOR", "gy511   | HEALTH | period=%lu ms ok_total=%lu failed_total=%lu overruns_total=%lu",
                      (unsigned long)active_interval_ms, (unsigned long)ok,
                      (unsigned long)(reads - ok), (unsigned long)overruns);
-            ESP_LOGI("SENSOR", "gy511   | HEALTH | max_read=%.2f ms stack_min=%u B uptime_ms=%" PRId64,
-                     max_read_us / 1000.0, (unsigned)uxTaskGetStackHighWaterMark(NULL), now_us / 1000);
+            ESP_LOGI("SENSOR", "gy511   | HEALTH | max_read=%.2f ms max_jitter=%.2f ms stack_min=%u B uptime_ms=%" PRId64,
+                     max_read_us / 1000.0, max_jitter_us / 1000.0,
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL), now_us / 1000);
         }
         if ((TickType_t)(xTaskGetTickCount() - next_due) >= period) {
             // Skip missed periods instead of spinning to catch up after a stall.
             overruns++;
             next_due = xTaskGetTickCount();
+            next_due_us = esp_timer_get_time();
         }
         // Preserve vTaskDelayUntil's phase and full-period pause after an overrun.
         next_due += period;
+        next_due_us += (int64_t)period * portTICK_PERIOD_MS * 1000;
     }
 }
 

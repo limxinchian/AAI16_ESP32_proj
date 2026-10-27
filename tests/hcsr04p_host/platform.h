@@ -1,6 +1,9 @@
 #pragma once
 #include "../sensor_host/platform.h"
 
+// Model the target SDK; otherwise both version-guarded pull-down paths are off.
+#define ESP_IDF_VERSION_MAJOR 5
+
 #define portENTER_CRITICAL_ISR portENTER_CRITICAL
 #define portEXIT_CRITICAL_ISR portEXIT_CRITICAL
 typedef void *QueueHandle_t;
