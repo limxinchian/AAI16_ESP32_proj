@@ -7,6 +7,7 @@
 #include "sensor_status.h"
 #include "ld2450_sensor.h"
 #include "hcsr04p_sensor.h"
+typedef struct motion_result motion_result_t;
 
 typedef enum {
     MQTT_CONFIG_INTERVAL,
@@ -25,6 +26,11 @@ typedef struct {
 // Initialize once before any sensor tasks use this manager. Client retries
 // automatically if Wi-Fi/broker is unavailable; no wait for a connection.
 esp_err_t mqtt_manager_init(void);
+// Stable identity assigned during init, also shared by local ML windows.
+uint32_t mqtt_manager_boot_id(void);
+// Temporary JSON adapter for a transport-independent bounded ML result.
+// Uses the existing zero-wait, QoS0, non-retained telemetry path and diagnostics.
+esp_err_t mqtt_manager_publish_motion(const motion_result_t *result);
 
 // Publication functions copy into a bounded local queue with zero queue wait.
 // ESP_OK means local queue acceptance, NOT ESP-MQTT enqueue or broker delivery.

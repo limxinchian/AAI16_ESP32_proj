@@ -17,4 +17,5 @@ idf_component_register(
         mhz1911a_sensor
         bme280_sensor
         max6675_sensor
+        motion_ml
 )

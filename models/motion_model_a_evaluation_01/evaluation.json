@@ -1,0 +1,288 @@
+{
+  "mode": "independent",
+  "created_utc": "2026-10-28T04:49:54.332134+00:00",
+  "model_version": "aai16-motion-model-a-0.1.0",
+  "model_manifest_sha256": "065efd4fe59d7106cdff596669a6adbb2fd9bde3a3fc9577678019c5a00e9d51",
+  "dataset": {
+    "window_samples": 20,
+    "stride_samples": 10,
+    "gap_limit_ms": 150,
+    "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+    "total_windows": 112,
+    "class_windows": {
+      "REST": 56,
+      "MOVING": 56
+    },
+    "sessions": [
+      {
+        "file": "rest_orientation_02.csv",
+        "sha256": "4a743c0bdffa40f12f4e7426552974362b1d61bfb66eb69696aa10041f711558",
+        "session_id": "rest_orientation_02_retry",
+        "label": "REST",
+        "rows": 598,
+        "valid_rows": 598,
+        "invalid_rows": [],
+        "boot_ranges": [
+          {
+            "boot_id": "71f086ee",
+            "start_ms": 226566,
+            "end_ms": 286466
+          }
+        ],
+        "reboots": 0,
+        "duplicates": 0,
+        "out_of_order": 0,
+        "sequence_gaps": 2,
+        "sampling_gaps": [
+          {
+            "row_index": 478,
+            "csv_line": 480,
+            "delta_ms": 300
+          }
+        ],
+        "sampling_gap_count": 1,
+        "delta_ms": {
+          "min": 98,
+          "median": 100.0,
+          "max": 300
+        },
+        "axis_statistics": {
+          "x": {
+            "min_g": -0.275,
+            "max_g": -0.249,
+            "std_g": 0.0038721417350785024
+          },
+          "y": {
+            "min_g": -0.043,
+            "max_g": -0.002,
+            "std_g": 0.006551673006945779
+          },
+          "z": {
+            "min_g": 0.996,
+            "max_g": 1.041,
+            "std_g": 0.006173267349024393
+          }
+        },
+        "possible_saturation_row_indices": [],
+        "constant_axes": [],
+        "constant_windows": 0,
+        "candidate_windows": 58,
+        "usable_windows": 56,
+        "rejected_windows": {
+          "sampling_gap+sequence_gap": 2
+        },
+        "warnings": []
+      },
+      {
+        "file": "moving_directions_03.csv",
+        "sha256": "74242dc2dff316d4bb39f2f6ec0eed6cc447841fce54c93cf5e1c5693607944f",
+        "session_id": "moving_directions_03",
+        "label": "MOVING",
+        "rows": 599,
+        "valid_rows": 599,
+        "invalid_rows": [],
+        "boot_ranges": [
+          {
+            "boot_id": "71f086ee",
+            "start_ms": 673166,
+            "end_ms": 733066
+          }
+        ],
+        "reboots": 0,
+        "duplicates": 0,
+        "out_of_order": 0,
+        "sequence_gaps": 0,
+        "sampling_gaps": [
+          {
+            "row_index": 141,
+            "csv_line": 143,
+            "delta_ms": 200
+          }
+        ],
+        "sampling_gap_count": 1,
+        "delta_ms": {
+          "min": 98,
+          "median": 100.0,
+          "max": 200
+        },
+        "axis_statistics": {
+          "x": {
+            "min_g": -0.952,
+            "max_g": 1.121,
+            "std_g": 0.3070728601469816
+          },
+          "y": {
+            "min_g": -1.64,
+            "max_g": 1.392,
+            "std_g": 0.48775993567551396
+          },
+          "z": {
+            "min_g": 0.098,
+            "max_g": 1.979,
+            "std_g": 0.3157638891887815
+          }
+        },
+        "possible_saturation_row_indices": [],
+        "constant_axes": [],
+        "constant_windows": 0,
+        "candidate_windows": 58,
+        "usable_windows": 56,
+        "rejected_windows": {
+          "sampling_gap": 2
+        },
+        "warnings": []
+      }
+    ]
+  },
+  "baseline_threshold_g_frozen": 0.08883622916580566,
+  "keras": {
+    "samples": 112,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        56,
+        0
+      ],
+      [
+        1,
+        55
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 0.9910714285714286,
+    "balanced_accuracy": 0.9910714285714286,
+    "per_class": {
+      "REST": {
+        "support": 56,
+        "precision": 0.9824561403508771,
+        "recall": 1.0,
+        "f1": 0.9911504424778761
+      },
+      "MOVING": {
+        "support": 56,
+        "precision": 1.0,
+        "recall": 0.9821428571428571,
+        "f1": 0.9909909909909909
+      }
+    }
+  },
+  "tflite_float32": {
+    "samples": 112,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        56,
+        0
+      ],
+      [
+        1,
+        55
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 0.9910714285714286,
+    "balanced_accuracy": 0.9910714285714286,
+    "per_class": {
+      "REST": {
+        "support": 56,
+        "precision": 0.9824561403508771,
+        "recall": 1.0,
+        "f1": 0.9911504424778761
+      },
+      "MOVING": {
+        "support": 56,
+        "precision": 1.0,
+        "recall": 0.9821428571428571,
+        "f1": 0.9909909909909909
+      }
+    }
+  },
+  "tflite_int8": {
+    "samples": 112,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        56,
+        0
+      ],
+      [
+        1,
+        55
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 0.9910714285714286,
+    "balanced_accuracy": 0.9910714285714286,
+    "per_class": {
+      "REST": {
+        "support": 56,
+        "precision": 0.9824561403508771,
+        "recall": 1.0,
+        "f1": 0.9911504424778761
+      },
+      "MOVING": {
+        "support": 56,
+        "precision": 1.0,
+        "recall": 0.9821428571428571,
+        "f1": 0.9909909909909909
+      }
+    }
+  },
+  "rms_baseline": {
+    "samples": 112,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        56,
+        0
+      ],
+      [
+        0,
+        56
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "per_class": {
+      "REST": {
+        "support": 56,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "MOVING": {
+        "support": 56,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "keras_vs_tflite_float32": {
+    "vectors": 112,
+    "prediction_agreement_count": 112,
+    "prediction_agreement_fraction": 1.0,
+    "logit_mean_absolute_error": 1.444880451474871e-07,
+    "logit_max_absolute_error": 9.5367431640625e-07,
+    "disagreement_vector_indices": []
+  },
+  "keras_vs_tflite_int8": {
+    "vectors": 112,
+    "prediction_agreement_count": 112,
+    "prediction_agreement_fraction": 1.0,
+    "logit_mean_absolute_error": 0.14759504778443702,
+    "logit_max_absolute_error": 1.3048782348632812,
+    "disagreement_vector_indices": []
+  },
+  "int8_input_elements_clipped": 157,
+  "limitations": "Independent recordings, but only two sessions; overlapping windows are correlated and the demo scope is narrow"
+}

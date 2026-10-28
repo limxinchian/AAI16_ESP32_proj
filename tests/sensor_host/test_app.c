@@ -175,6 +175,7 @@ int main(int argc, char **argv)
     if (!strcmp(scenario, "dht_missing")) { dht_missing = true; stop_at_us = 125000000; }
 
     if (worker_only) {
+        s_motion_boot_id = mqtt_manager_boot_id();
         sensor_status_configure(SENSOR_GY511, "gy511", true);
         sensor_status_record_init(SENSOR_GY511, ESP_OK);
         stop_at_us = 2200000;

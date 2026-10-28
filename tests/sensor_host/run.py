@@ -30,11 +30,13 @@ flags = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-param
          "-I", str(test), "-I", str(output)]
 for component in ["sensor_status", "dht22_moisture_sensor", "gy511_sensor",
                   "i2c_bus_manager", "wifi_manager", "mqtt_manager", "rc522_sensor", "spi_bus_manager", "ld2450_sensor",
-                  "hcsr04p_sensor", "mhz1911a_sensor", "bme280_sensor", "max6675_sensor"]:
+                  "hcsr04p_sensor", "mhz1911a_sensor", "bme280_sensor", "max6675_sensor", "motion_ml"]:
     flags += ["-I", str(repo / "components" / component / "include")]
 for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_bme280", "test_max6675", "test_runtime"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(test / "platform.c")]
+    if name in ("test_app", "test_runtime"):
+        sources += [str(test / "motion_stub.c")]
     if name not in ("test_gy511", "test_bme280", "test_max6675"):
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     threading_flags = ["-pthread"] if name == "test_runtime" else []

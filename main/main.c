@@ -16,6 +16,7 @@
 #include "bme280_reader.h"
 #include "max6675_reader.h"
 #include "sensor_config.h"
+#include "motion_ml.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -35,16 +36,25 @@
 #define GY511_LOG_INTERVAL_MS 10000
 
 static TaskHandle_t s_gy511_task;
+static uint32_t s_motion_boot_id;
+
+static void publish_motion(const motion_result_t *result)
+{
+    (void)mqtt_manager_publish_motion(result);
+}
 
 static void gy511_reader_task(void *arg)
 {
     (void)arg;
+    motion_ml_set_sensor_available(true);
     vTaskDelay(pdMS_TO_TICKS(100));
     TickType_t next_due = xTaskGetTickCount();
     TickType_t last_sample = next_due;
     int64_t next_due_us = esp_timer_get_time();
     int64_t last_sample_us = next_due_us;
     uint32_t active_interval_ms = GY511_SAMPLE_MS;
+    uint32_t ml_sequence = 0, ml_generation = 0;
+    bool ml_enabled = true;
     TickType_t period = pdMS_TO_TICKS(GY511_SAMPLE_MS);
     uint32_t control = 0;
     bool pending_update = false;
@@ -77,6 +87,7 @@ static void gy511_reader_task(void *arg)
                     (void)mqtt_manager_reject_config(&update, "sensor_unavailable");
                     continue;
                 }
+                ml_enabled = update.enabled;
                 if (update.enabled && status.state == SENSOR_DISABLED) {
                     // Fresh anchor: no catch-up reads, and repeated enables do
                     // not keep moving the deadline. Retain the configured period.
@@ -101,6 +112,7 @@ static void gy511_reader_task(void *arg)
                 ESP_LOGI("SENSOR", "gy511   | HEALTH | config_period_ms=%lu",
                        (unsigned long)active_interval_ms);
             }
+            motion_ml_configure(active_interval_ms, ++ml_generation, ml_enabled);
             (void)mqtt_manager_publish_config_ack(&update);
         }
 
@@ -133,6 +145,17 @@ static void gy511_reader_task(void *arg)
         sensor_status_record_read(SENSOR_GY511, err, completed_us);
         if (read_us > max_read_us) max_read_us = read_us;
         reads++;
+        // The sole I2C reader also owns ML sequence/config metadata. Sequence
+        // counts every attempted read, including failures; MQTT keeps its own
+        // existing successful-handoff sequence. No retries or cached samples.
+        motion_sample_t ml_sample = {
+            .boot_id = s_motion_boot_id, .sequence = ++ml_sequence,
+            .generation = ml_generation, .interval_ms = active_interval_ms,
+            .acquired_us = err == ESP_OK ? reading.acquired_us : completed_us,
+            .xyz = {reading.accel_x_g, reading.accel_y_g, reading.accel_z_g},
+            .valid = err == ESP_OK,
+        };
+        (void)motion_ml_submit(&ml_sample);
         if (err == ESP_OK) {
             ok++;
             // Zero-wait handoff. Failures appear in MQTT diagnostics.
@@ -208,6 +231,12 @@ void app_main(void)
                esp_err_to_name(mqtt_err));
     }
 
+    // ML startup is independent of sensor and transport availability.
+    s_motion_boot_id = mqtt_manager_boot_id();
+    esp_err_t ml_err = motion_ml_start(s_motion_boot_id, publish_motion);
+    if (ml_err != ESP_OK) {
+        ESP_LOGE("ML", "startup=%s; other sensors continue", esp_err_to_name(ml_err));
+    }
     // Initialize and scan the shared I2C bus.
     esp_err_t i2c_err = i2c_bus_manager_init();
 

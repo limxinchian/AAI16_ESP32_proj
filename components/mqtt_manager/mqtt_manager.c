@@ -1,5 +1,6 @@
 
 #include "mqtt_manager.h"
+#include "motion_core.h"
 #include "mhz1911a_sensor.h"
 #include "mqtt_credentials.h"
 
@@ -36,6 +37,7 @@
 #define MHZ1911A_DATA_TOPIC "aai16/sensors/mhz1911a/data"
 #define BME280_DATA_TOPIC "aai16/sensors/bme280/data"
 #define MAX6675_DATA_TOPIC "aai16/sensors/max6675/data"
+#define MOTION_DATA_TOPIC "aai16/ml/motion/data"
 
 #define CONFIG_QUEUE_SIZE 4
 #define MQTT_CONNECTED_BIT BIT0
@@ -132,6 +134,7 @@ typedef enum {
     TX_MHZ1911A,
     TX_BME280,
     TX_MAX6675,
+    TX_MOTION,
     TX_KIND_COUNT
 } tx_kind_t;
 
@@ -727,7 +730,7 @@ static void mqtt_tx_task(void *arg)
     (void)arg;
     static const char *const topics[TX_KIND_COUNT] = {
         DHT22_DATA_TOPIC, GY511_DATA_TOPIC, CONFIG_ACK_TOPIC, RC522_EVENT_TOPIC, LD2450_DATA_TOPIC,
-        HCSR04P_DATA_TOPIC, MHZ1911A_DATA_TOPIC, BME280_DATA_TOPIC, MAX6675_DATA_TOPIC
+        HCSR04P_DATA_TOPIC, MHZ1911A_DATA_TOPIC, BME280_DATA_TOPIC, MAX6675_DATA_TOPIC, MOTION_DATA_TOPIC
     };
     tx_message_t message;
     int64_t next_failure_log_us = 0;
@@ -876,7 +879,7 @@ void mqtt_manager_log_diagnostics(void)
              mhz1911a_updates, mhz1911a_coalesced, mhz1911a_invalid, mhz1911a_nonnew, mhz1911a_deferred, mhz1911a_pending, mhz1911a_enabled);
     static const char *const names[TX_KIND_COUNT] = {
         "dht22", "gy511", "config_ack", "rc522_event", "ld2450", "hcsr04p", "mhz1911a",
-        "bme280", "max6675"};
+        "bme280", "max6675", "motion_ml"};
     for (int i = 0; i < TX_KIND_COUNT; ++i) {
         const tx_stats_t *s = &snapshot[i];
         ESP_LOGI(TAG, "%s attempts=%" PRIu32 " queued=%" PRIu32
@@ -1519,6 +1522,35 @@ esp_err_t mqtt_manager_publish_gy511(
     // Compatibility entry point for callers without acquisition metadata.
     return mqtt_manager_publish_gy511_at(accel_x_g, accel_y_g, accel_z_g,
         mag_x_ut, mag_y_ut, mag_z_ut, esp_timer_get_time(), 0);
+}
+
+uint32_t mqtt_manager_boot_id(void) { return s_boot_id; }
+
+esp_err_t mqtt_manager_publish_motion(const motion_result_t *r)
+{
+    (void)begin_attempt(TX_MOTION);
+    if (!r || !memchr(r->model_version, '\0', sizeof(r->model_version)) ||
+        !r->model_version[0] ||
+        strspn(r->model_version, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != strlen(r->model_version) ||
+        (unsigned)r->status > MOTION_SENSOR_UNAVAILABLE ||
+        (r->status == MOTION_PREDICTION && (!r->model_ready || r->class_id < 0 || r->class_id > 1)) ||
+        r->uptime_us < 0 || r->uptime_us > esp_timer_get_time()) {
+        count_event(&s_stats[TX_MOTION].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    tx_message_t message = {.kind = TX_MOTION, .created_ms = r->uptime_us / 1000};
+    const char *state = r->status == MOTION_PREDICTION ? (r->class_id == 0 ? "REST" : "MOVING") : "UNKNOWN";
+    // Bounded adapter only: engine/window structures do not contain JSON.
+    // Keep under the existing queue's payload limit; full diagnostics are serial.
+    message.len = snprintf(message.payload, sizeof(message.payload),
+        "{\"model\":\"%s\",\"state\":\"%s\",\"status\":\"%s\",\"ready\":%s,"
+        "\"boot_id\":\"%08" PRIx32 "\",\"first\":%" PRIu32 ",\"last\":%" PRIu32 ","
+        "\"generation\":%" PRIu32 ",\"period_ms\":%" PRIu32 ",\"uptime_ms\":%" PRId64 ","
+        "\"inference_us\":%" PRId64 ",\"clipped\":%" PRIu32 "}",
+        r->model_version, state, motion_status_name(r->status), r->model_ready ? "true" : "false",
+        r->boot_id, r->first_sequence, r->last_sequence, r->generation, r->interval_ms,
+        message.created_ms, r->inference_us, r->clipped);
+    return queue_message(&message);
 }
 
 esp_err_t mqtt_manager_publish_gy511_at(

@@ -691,6 +691,46 @@ int main(void)
     data = cJSON_Parse(last_payload);
     assert(data && cJSON_GetObjectItem(data, "temperature_c")->valuedouble == 123.25);
     cJSON_Delete(data);
+    motion_result_t motion = {
+        .model_version = "aai16-motion-model-a-0.1.0", .status = MOTION_PREDICTION,
+        .model_ready = true, .class_id = 1, .boot_id = mqtt_manager_boot_id(),
+        .first_sequence = 11, .last_sequence = 30, .generation = 2,
+        .interval_ms = 100, .uptime_us = clock_us, .inference_us = 123,
+        .clipped = 3,
+    };
+    int before_ml_publish = publish_calls;
+    assert(mqtt_manager_publish_motion(&motion) == ESP_OK);
+    assert(publish_calls == before_ml_publish); // No network calls on ML task.
+    pump();
+    assert(!strcmp(last_topic, MOTION_DATA_TOPIC) && last_qos == 0);
+    data = cJSON_Parse(last_payload);
+    assert(data && !strcmp(cJSON_GetObjectItem(data, "state")->valuestring, "MOVING"));
+    assert(cJSON_GetObjectItem(data, "first")->valueint == 11);
+    assert(cJSON_GetObjectItem(data, "last")->valueint == 30);
+    assert(cJSON_GetObjectItem(data, "inference_us")->valueint == 123);
+    assert(!cJSON_GetObjectItem(data, "probability"));
+    cJSON_Delete(data);
+    motion.status = MOTION_WAIT_100MS; motion.interval_ms = 500; motion.uptime_us = clock_us;
+    assert(mqtt_manager_publish_motion(&motion) == ESP_OK); pump();
+    assert(strstr(last_payload, "requires_100ms") && strstr(last_payload, "UNKNOWN"));
+    motion.status = MOTION_PREDICTION; motion.class_id = 2;
+    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_INVALID_ARG);
+    assert(mqtt_manager_publish_motion(NULL) == ESP_ERR_INVALID_ARG);
+    motion.class_id = 0;
+    strcpy(motion.model_version, "invalid\"version");
+    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_INVALID_ARG);
+    strcpy(motion.model_version, "aai16-motion-model-a-0.1.0");
+    motion.uptime_us = clock_us;
+    event(MQTT_EVENT_DISCONNECTED);
+    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_INVALID_STATE);
+    event(MQTT_EVENT_CONNECTED);
+    pump();
+    // The shared bound is unchanged; newest ML data drops on backpressure.
+    motion.uptime_us = clock_us;
+    for (unsigned i = 0; i < TX_QUEUE_SIZE; ++i) assert(mqtt_manager_publish_motion(&motion) == ESP_OK);
+    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_NO_MEM);
+    pump();
+    puts("PASS: ML result topic, bounded JSON adapter, unavailable status, invalid inputs, offline and queue-full drops");
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +
