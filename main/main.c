@@ -31,7 +31,7 @@
 #define HEALTH_INTERVAL_US 60000000LL
 #define JITTER_LIMIT_US 50000LL
 
-#define GY511_SAMPLE_MS 500
+#define GY511_SAMPLE_MS 100
 // Serial display only; every successful read is still published.
 #define GY511_LOG_INTERVAL_MS 10000
 

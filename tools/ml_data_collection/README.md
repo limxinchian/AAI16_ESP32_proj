@@ -26,9 +26,9 @@ after both acceleration and magnetic reads. There was no dataset collector.
 
 ## Acquisition and telemetry contract
 
-- GY-511 accepts **integer 100..10000 ms, inclusive**. The default remains
-  **500 ms** after each boot. Configuration is in RAM, so set 100 ms again
-  after reboot. Every previous valid interval remains valid.
+- GY-511 accepts **integer 100..10000 ms, inclusive**. The startup default is now
+  **100 ms** (previously 500 ms). Configuration is in RAM, so reboot restores
+  100 ms automatically. Every previous valid interval remains valid.
 - Actual periods round **up** to the RTOS tick: this project's tick is 10 ms,
   so 100 -> 100 ms and 101 -> 110 ms. No other sensor interval limit changes.
 - The owning GY-511 task changes its I2C read deadline, then issues the applied
@@ -128,9 +128,11 @@ did not flash or access a physical device. Deployment is a separate user action.
    `aai16/sensors/+/data`; subscribe separately to
    `aai16/sensors/rc522/event` to check RFID. Use QoS 1 subscriptions if desired.
 2. Verify boot logs show GY-511 initialized at 100 Hz/+/-2 g and magnetic 30 Hz.
-   Before configuration, acquisition/telemetry deltas should be near 500 ms.
+   Before configuration, acquisition/telemetry deltas should be near 100 ms.
    Check all eight sensor statuses; allow the CO2 sensor's existing warm-up.
-3. Publish the following to **`aai16/config/set`**, QoS 1, **Retain OFF**:
+3. No configuration is required after a fresh boot. To verify runtime control
+   or restore a previously changed/disabled reader, publish the following to
+   **`aai16/config/set`**, QoS 1, **Retain OFF**:
 
    ```json
    {"sensor":"gy511","enabled":true}
@@ -180,7 +182,7 @@ every ESP32 reboot before recording ML data.
 
 ## Record the first REST and MOVING sessions
 
-After setting 100 ms and checking telemetry, place the stationary sensor in one
+After confirming 100 ms telemetry, place the stationary sensor in one
 orientation. Keep it stationary for the entire REST recording:
 
 ```powershell
@@ -255,8 +257,8 @@ cannot be inferred. uint32 sequence wrap is handled.
 
 Default excessive-gap threshold is **greater than 150 ms**, configurable using
 `--max-gap-ms`. Gapped valid rows are retained with their actual timestamps;
-the tool warns and reports gaps without filling them. A sensor still at the
-500 ms default therefore produces obvious gap warnings. Recent duplicates are
+the tool warns and reports gaps without filling them. A sensor configured to
+500 ms therefore produces obvious gap warnings. Recent duplicates are
 recognized within a bounded 4096-sequence history; older repeats are rejected
 as out-of-order. The MQTT callback queue holds at most 1024 messages; overflow
 and unprocessed messages on early shutdown are counted as drops.
@@ -301,7 +303,7 @@ After implementation:
 
 - All six C host suites passed. Sensor suite: **129 passing cases**, including
   seven new collection runtime scenarios. The eight-reader 65-second simulation
-  includes 632 GY reads (500 ms initially, 100 ms after configuration), 32 DHT,
+  now includes 649 GY reads (100 ms from startup without configuration), 32 DHT,
   325 RFID, 590 radar, 325 distance, 1 warmed-up CO2, 65 BME and 260 MAX reads.
 - Driver tests cover ODR/range readback, data-ready behavior, identical fresh
   values, acquisition timestamp placement, I2C failures, magnetic saturation,
@@ -351,7 +353,7 @@ installed Paho into ignored `build/ml_python`; that environment used
 | Files | Purpose |
 | --- | --- |
 | `components/gy511_sensor/gy511_sensor.c`, `include/gy511_sensor.h`, `CMakeLists.txt` | Readback, fresh-data guard, acquisition timestamp, atomic successful output, timer dependency |
-| `main/main.c` | Read-owner jitter accounting and timestamped MQTT handoff; existing schedule/default retained |
+| `main/main.c` | Read-owner jitter accounting and timestamped MQTT handoff; 100 ms startup default |
 | `components/mqtt_manager/mqtt_manager.c`, `include/mqtt_manager.h` | GY-only 100 ms floor, acquisition-time API, additive jitter field |
 | `tools/ml_data_collection/collector.py`, `requirements.txt`, `README.md` | Standalone recorder, pinned dependency, collection and verification guide |
 | `tools/ml_data_collection/test_collector.py`, `test_mqtt_loopback.py` | Offline validation and real Paho loopback integration tests |

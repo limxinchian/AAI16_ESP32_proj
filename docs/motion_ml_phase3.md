@@ -4,7 +4,9 @@ Implemented on branch `feature/ml-gy511-data-collection`, 2026-10-28 (Singapore)
 Firmware builds with ESP-IDF 5.5.5 for ESP32-S3. No flash, monitor connection,
 commit, branch change, training, credential change, or partition change was performed.
 The pre-existing untracked `models/motion_model_a_evaluation_01/` was preserved.
-Device execution is the next verification step; host tests are not hardware results.
+The owner subsequently hardware-tested Phase 3. The 100 ms startup-default
+follow-up below still requires a fresh-boot hardware check; host tests are not
+hardware results.
 
 Final `idf.py build`: **PASS**. `build/AAI16_ESP32_proj.bin` is **1,117,632 bytes**
 (`0x110dc0`); the existing 4 MiB factory partition has 73% free. The bootloader
@@ -95,9 +97,14 @@ documentation for a newer branch.
 
 ## Sampling and task design
 
-The reader still starts at **500 ms after every boot**. The ML status is
-`requires_100ms` until the acquisition owner applies this existing, non-retained
-MQTT command on `aai16/config/set`:
+The reader and ML sampling gate now start at **100 ms after every boot** (previously
+500 ms). After model initialization/golden checks and 20 continuous valid samples,
+predictions begin automatically without an MQTT configuration command. Generation
+starts at zero; the 20-sample window and 10-sample stride are unchanged.
+
+Runtime configuration remains available on `aai16/config/set`. Selecting any
+interval other than 100 ms discards incomplete ML windows and reports
+`requires_100ms`. Restore 10 Hz with this existing, non-retained command:
 
 ```json
 {"sensor":"gy511","interval_ms":100}
@@ -196,7 +203,8 @@ Host tests passed:
 - Each backend completes 10,000 repeated actual Invoke calls with unchanged
   outputs and arena-used count. Host arena usage was 1,168 bytes; this is **not**
   ESP32 RAM usage or its required arena size, and excludes transient startup needs.
-- Nineteen worker scenarios: live cadence, 500 ms gate, invalid data, gap,
+- Twenty-one worker scenarios: live cadence, automatic startup without a command,
+  500 ms gate, interval change/restoration with fresh windows, invalid data, gap,
   sequence loss, reboot identity, configuration rebuild, disabled, stale, silence,
   unavailable, overflow, configuration during Invoke, queue/task/arena allocation
   failures, interpreter initialization failure, golden failure and Invoke failure.
@@ -246,7 +254,7 @@ second, with a 60-second heartbeat; predictions emit once per completed window.
 Illustrative payload (the duration here is an example, not a measurement):
 
 ```json
-{"model":"aai16-motion-model-a-0.1.0","state":"REST","status":"prediction","ready":true,"boot_id":"5120e965","first":1,"last":20,"generation":1,"period_ms":100,"uptime_ms":45800,"inference_us":123,"clipped":0}
+{"model":"aai16-motion-model-a-0.1.0","state":"REST","status":"prediction","ready":true,"boot_id":"5120e965","first":1,"last":20,"generation":0,"period_ms":100,"uptime_ms":45800,"inference_us":123,"clipped":0}
 ```
 
 Unavailable output uses `state:"UNKNOWN"` and an explanatory `status`, such as
@@ -270,13 +278,19 @@ Check on hardware:
 
 1. Startup reports Model A golden vectors `4/4 PASS`; capture arena, heap and
    stack statistics and confirm ESP-NN configuration.
-2. Before configuration, observe 500 ms telemetry and `requires_100ms`, with no
-   predictions. Apply the 100 ms command and confirm its ACK.
-3. After twenty new valid samples, observe `ML: model=A state=REST inference_us=...`
+2. Reboot with no MQTT configuration publisher running. Observe 100 ms acquisition
+   deltas on `aai16/sensors/gy511/data` and HEALTH `period=100 ms`.
+3. Without sending a command, after twenty valid samples observe
+   `ML: model=A state=REST inference_us=...`
    on a stationary desk, then MOVING during sustained hand motion; record results.
 4. Confirm approximately one output per second, all eight sensor streams and
    Wi-Fi/MQTT remain responsive, and actual acquisition gaps stay within bounds.
-5. Exercise disable/re-enable, 500↔100 ms changes, sensor disconnection, broker
+5. Publish `{"sensor":"gy511","interval_ms":500}` to `aai16/config/set` with
+   retain off; require its applied ACK and `requires_100ms`, with predictions
+   stopping after any already queued output drains. Restore 100 ms, require its
+   ACK, and confirm predictions resume only after twenty fresh valid samples.
+   Set 500 ms again, reboot without further commands, and confirm startup returns
+   to 100 ms with automatic predictions. Exercise disable/re-enable, sensor disconnection, broker
    disconnection and reconnect. Confirm windows restart and stale predictions
    are not replayed. Capture clipping and loss/reset counters.
 6. Measure inference distribution, stack minimum, arena-used bytes, free/minimum

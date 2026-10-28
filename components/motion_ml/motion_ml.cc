@@ -24,7 +24,7 @@ portMUX_TYPE ingress_lock = portMUX_INITIALIZER_UNLOCKED;
 struct Control {
     uint32_t epoch, drops, interval_ms, generation;
     bool enabled, available;
-} control = {0, 0, 500, 0, true, false};
+} control = {0, 0, 100, 0, true, false};
 uint32_t boot_id;
 motion_result_callback_t on_result;
 TaskHandle_t worker;

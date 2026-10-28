@@ -3,7 +3,7 @@
 #include "platform.h"
 #include "motion_ml.h"
 #include <assert.h>
-static uint32_t ml_sequence, ml_generation, ml_period=500;
+static uint32_t ml_sequence, ml_generation, ml_period=100;
 static bool ml_enabled=true;
 esp_err_t motion_ml_start(uint32_t boot_id, motion_result_callback_t callback)
 { (void)boot_id; (void)callback; return ESP_OK; }

@@ -88,7 +88,7 @@ assert clipped_total == clipping
 (build / "python_outputs.bin").write_bytes(ref_outputs.tobytes())
 suffix = ".exe" if os.name == "nt" else ""
 subprocess.run([str(build / ("test_core" + suffix))], check=True)
-worker_cases = ("live", "default", "invalid", "gap", "sequence", "reboot", "configure", "disabled",
+worker_cases = ("live", "default", "non_100ms", "interval_restore", "invalid", "gap", "sequence", "reboot", "configure", "disabled",
                 "stale", "no_data", "unavailable", "overflow", "config_invoke", "queue_fail", "task_fail",
                 "heap_fail", "init_fail", "golden_fail", "invoke_fail")
 for case in worker_cases:

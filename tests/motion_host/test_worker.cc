@@ -50,7 +50,9 @@ static void result_callback(const motion_result_t *r) {
         assert(r->model_ready && r->class_id==0 && r->last_sequence-r->first_sequence==19);
         assert(r->window_end_us-r->window_start_us<=19*150000);
         assert(r->generation==control.generation);
-        if(is("live")) assert(r->last_sequence==20+(predictions-1)*10);
+        if(is("live") || is("default")) assert(r->last_sequence==20+(predictions-1)*10);
+        if(is("default")) assert(r->generation==0 && r->interval_ms==100);
+        if(is("interval_restore")) assert(r->generation==2 && r->first_sequence>=30);
         if(is("invalid")) assert(r->first_sequence>10);
         if(is("gap") || is("reboot") || is("sequence") || is("configure")) assert(r->first_sequence>=10);
     }
@@ -60,7 +62,9 @@ BaseType_t xQueueReceive(QueueHandle_t,void* value,TickType_t wait) {
     assert(wait==10);
     if(!count) {
         if(++produced>60) std::longjmp(stopped,1);
-        now_us+=100000;
+        if(is("interval_restore") && produced==10) motion_ml_configure(500,1,true);
+        if(is("interval_restore") && produced==30) motion_ml_configure(100,2,true);
+        now_us+=(int64_t)control.interval_ms*1000;
         if(is("no_data")) return pdFALSE;
         motion_sample_t s={};
         s.boot_id=7; s.sequence=produced; s.generation=control.generation;
@@ -88,7 +92,7 @@ int main(int argc,char**argv) {
     assert(motion_ml_start(7,result_callback)==ESP_OK);
     assert(motion_ml_start(7,result_callback)==ESP_ERR_INVALID_STATE);
     if(!is("unavailable")) motion_ml_set_sensor_available(true);
-    if(!is("default")) motion_ml_configure(100,0,true);
+    if(is("non_100ms")) motion_ml_configure(500,1,true);
     if(is("overflow")) {
         motion_sample_t s={}; s.boot_id=7; s.interval_ms=100; s.valid=true; s.acquired_us=now_us;
         for(unsigned i=0;i<32;++i) { s.sequence=i; assert(motion_ml_submit(&s)); }
@@ -96,12 +100,13 @@ int main(int argc,char**argv) {
     }
     if(!setjmp(stopped)) task_fn(nullptr);
     assert(allocation_calls==1);
-    if(is("live") || is("overflow")) assert(predictions==5);
+    if(is("live") || is("default") || is("overflow")) assert(predictions==5);
+    else if(is("interval_restore")) assert(predictions==2);
     else if(is("invalid") || is("gap") || is("reboot") || is("sequence") || is("configure")) assert(predictions==4);
     else if(is("config_invoke")) assert(predictions==3 && invoke_calls==4);
     else assert(predictions==0);
     if(invoke_fail) assert(invoke_calls==1);
-    if(is("default")) assert(outputs[received_results-1].status==MOTION_WAIT_100MS);
+    if(is("non_100ms")) assert(outputs[received_results-1].status==MOTION_WAIT_100MS);
     if(is("disabled")) assert(outputs[received_results-1].status==MOTION_SENSOR_DISABLED);
     if(heap_fail || init_fail || golden_fail) assert(outputs[received_results-1].status==MOTION_INIT_FAILED);
     if(is("no_data")) assert(outputs[received_results-1].status==MOTION_NO_DATA);

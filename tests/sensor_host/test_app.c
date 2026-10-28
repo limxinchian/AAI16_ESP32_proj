@@ -178,7 +178,7 @@ int main(int argc, char **argv)
         s_motion_boot_id = mqtt_manager_boot_id();
         sensor_status_configure(SENSOR_GY511, "gy511", true);
         sensor_status_record_init(SENSOR_GY511, ESP_OK);
-        stop_at_us = 2200000;
+        stop_at_us = gy_overrun ? 1100000 : 600000;
     }
     if (!setjmp(stopped)) {
         if (worker_only) gy511_reader_task(NULL);
@@ -190,14 +190,14 @@ int main(int argc, char **argv)
     assert(sensor_status_get(SENSOR_GY511, &gy));
     if (worker_only) {
         if (gy_overrun) {
-            assert(gy_times[0] == 100000 && gy_times[1] == 1300000 && gy_times[2] == 1800000);
+            assert(gy_times[0] == 100000 && gy_times[1] == 900000 && gy_times[2] == 1000000);
             assert(gy_reads == 3 && gy_publications == 3);
         } else {
             assert(gy_reads == 5 && gy_publications == 2);
-            for (unsigned i = 0; i < gy_reads; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
+            for (unsigned i = 0; i < gy_reads; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
             assert(gy.state == SENSOR_DEGRADED && gy.error_stage == SENSOR_STAGE_READ);
             assert(gy.read_failures == 3 && gy.read_successes == 2 && gy.consecutive_failures == 1);
-            assert(gy.last_success_us == 1600000);
+            assert(gy.last_success_us == 400000);
         }
     } else {
         assert(wifi_starts == 1 && mqtt_starts == 1 && bus_starts == 1 && dht_inits == 1);

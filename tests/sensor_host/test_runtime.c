@@ -31,7 +31,7 @@ enum { SIM_TASKS = 8 };
 static sim_task_t tasks[SIM_TASKS]; // app/DHT, GY, RC, radar, distance, CO2, BME, MAX
 static bool extra_active, ml_slow, ml_failures, ml_jitter;
 static unsigned bme_reads, max_reads, bme_tx, max_tx;
-static int64_t gy_publish_times[1024];
+static int64_t gy_publish_times[2048];
 static bool co2_active, co2_task_failure;
 static pthread_mutex_t scheduler_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t scheduler_changed = PTHREAD_COND_INITIALIZER;
@@ -69,7 +69,7 @@ static bool ultra_recover_on_enable;
 static unsigned ultra_active_notifications;
 static int64_t ultra_times[1024];
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
-static int64_t dht_times[128], gy_times[1024];
+static int64_t dht_times[128], gy_times[2048];
 static mqtt_config_update_t queue[4];
 static unsigned queued, taken;
 typedef struct { int64_t at_us; mqtt_config_update_t update; const char *rejection; } input_t;
@@ -350,7 +350,7 @@ esp_err_t gy511_sensor_read(gy511_data_t *data)
     if (ml_failures && gy_count >= 10 && gy_count <= 12)
         return gy_count == 10 ? ESP_ERR_INVALID_STATE : ESP_ERR_TIMEOUT;
     if (slow_read && test_now_us - base_us == 2100000) vTaskDelay(pdMS_TO_TICKS(700));
-    if (gy_read_error && gy_count == 5) return ESP_ERR_TIMEOUT;
+    if (gy_read_error && test_now_us - base_us == 2300000) return ESP_ERR_TIMEOUT;
     *data = (gy511_data_t){1, 2, 3, 10, 20, 30, test_now_us}; return ESP_OK;
 }
 esp_err_t mqtt_manager_publish_dht22(float temperature, float humidity)
@@ -634,15 +634,15 @@ static void test_gates(const char *scenario)
         if (!enabled) assert((sensor == SENSOR_DHT22 ? dht_count : gy_count) == paused_count);
     }
     if (gy_pause) {
-        assert(gy_count == 9);
-        for (unsigned i = 0; i < 5; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
-        assert(gy_times[5] == 3100000);
-        for (unsigned i = 6; i < gy_count; ++i) assert(gy_times[i] == 5300000 + (i - 6) * 1000000LL);
+        assert(gy_count == 27);
+        for (unsigned i = 0; i < 23; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
+        assert(gy_times[23] == 3300000);
+        for (unsigned i = 24; i < gy_count; ++i) assert(gy_times[i] == 5300000 + (i - 24) * 1000000LL);
     } else if (dht_pause) {
         assert(dht_count == 3 && dht_times[0] == 2000000 && dht_times[1] == 9300000 && dht_times[2] == 14300000);
     } else if (both) {
         assert(dht_count == 2 && dht_times[0] == 2000000 && dht_times[1] == 124000000);
-        assert(gy_count == 9 && gy_times[5] == 122500000 && gy_times[8] == 124000000);
+        assert(gy_count == 44 && gy_times[23] == 122100000 && gy_times[43] == 124100000);
         assert(diagnostics_paused > 1100 && test_log_calls >= 6);
     } else if (burst) {
         if (!preempt_on_notify) assert(notify_busy > 0);
@@ -668,8 +668,9 @@ static void test_gates(const char *scenario)
         assert(acks[0].at_us == 2700000); // Commit follows the in-flight read and publication.
         assert(dht_count == 3 && dht_times[0] == 2000000 && dht_times[1] == 5300000 && dht_times[2] == 7300000);
     } else {
-        assert(gy_count == 14);
-        for (unsigned i = 5; i < gy_count; ++i) assert(gy_times[i] == 3800000 + (i - 5) * 500000LL);
+        unsigned before_pause = slow_read ? 21U : 23U;
+        assert(gy_count == before_pause + 48);
+        for (unsigned i = before_pause; i < gy_count; ++i) assert(gy_times[i] == 3400000 + (i - before_pause) * 100000LL);
         if (slow_read) assert(acks[0].at_us == 2800000);
         if (gy_read_error) {
             assert(acks[0].state == SENSOR_DISABLED && acks[1].state == SENSOR_DEGRADED);
@@ -684,8 +685,8 @@ static void test_gates(const char *scenario)
         for (unsigned i = 0; i < dht_count; ++i) assert(dht_times[i] == 2000000 + i * 2000000LL);
     }
     if (dht_pause || slow_dht_read || dht_missing) {
-        assert(gy_count == (dht_pause ? 30U : 17U));
-        for (unsigned i = 0; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
+        assert(gy_count == (dht_pause ? 149U : 81U));
+        for (unsigned i = 0; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
     }
     printf("PASS: enable/disable scenario %s\n", scenario);
 }
@@ -833,9 +834,9 @@ static void test_rc522_config(const char *scenario)
         }
     }
     if (!all_config) {
-        assert(dht_count == 4 && gy_count == 17);
+        assert(dht_count == 4 && gy_count == 81);
         for (unsigned i = 0; i < dht_count; ++i) assert(dht_times[i] == 2000000 + i * 2000000LL);
-        for (unsigned i = 0; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
+        for (unsigned i = 0; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
     } else assert(dht_count > 0 && gy_count > 0 && rc_count > 0);
     printf("PASS: RC522 runtime configuration scenario %s\n", scenario);
 }
@@ -854,9 +855,9 @@ static void test_radar(const char *scenario)
     simulate();
     verify_commands();
     assert(dht_count == 2 && dht_times[0] == 2000000 && dht_times[1] == 7000000);
-    assert(gy_count == 11 && rc_count == 24 && rc_tx == 1);
+    assert(gy_count == 29 && rc_count == 24 && rc_tx == 1);
     for (unsigned i = 0; i < gy_count; ++i) {
-        assert(gy_times[i] == (i < 5 ? 100000 + i * 500000LL : 3100000 + (i - 5) * 1000000LL));
+        assert(gy_times[i] == (i < 24 ? 100000 + i * 100000LL : 3400000 + (i - 24) * 1000000LL));
     }
     for (unsigned i = 0; i < rc_count; ++i) {
         assert(rc_times[i] == (i < 13 ? i * 200000LL : 2900000 + (i - 13) * 500000LL));
@@ -934,7 +935,7 @@ static void test_radar_config(const char *scenario)
         }
     }
     simulate(); verify_commands();
-    assert(dht_count == 2 && gy_count == 11 && rc_count == 24 && rc_tx == 1);
+    assert(dht_count == 2 && gy_count == 29 && rc_count == 24 && rc_tx == 1);
     assert(radar_inits == (radar_task_failure ? 0U : 1U));
     sensor_status_t s; assert(sensor_status_get(SENSOR_LD2450, &s));
     if (unavailable) {
@@ -988,7 +989,8 @@ static void test_ml_collection(const char *scenario)
     if (!strcmp(scenario, "ml_wrap")) base_us = ((int64_t)UINT32_MAX - 30) * 10000;
     test_now_us = base_us;
     end_us = all ? 65000000 : 8200000;
-    input(2300000, SENSOR_GY511, rounding ? 101 : 100);
+    // The eight-sensor run and fault cases now start at 10 Hz without commands.
+    if (rounding) input(2300000, SENSOR_GY511, 101);
     if (gates) {
         gate_input(3000000, SENSOR_GY511, false);
         gate_input(4000000, SENSOR_GY511, true);
@@ -996,10 +998,11 @@ static void test_ml_collection(const char *scenario)
         input(4500000, SENSOR_GY511, 100); // Repeated interval cannot starve reads.
     }
     simulate(); verify_commands();
-    assert(acks[0].at_us == 2300000 && acks[0].update.interval_ms == (rounding ? 101U : 100U));
-    assert(gy_times[5] == 2300000); // Actual I2C acquisition, not a publication timer.
-    int64_t period_us = rounding ? 110000 : 100000;
-    for (unsigned i = 6; i < gy_count; ++i) {
+    if (rounding) assert(acks[0].at_us == 2300000 && acks[0].update.interval_ms == 101);
+    else if (!gates) assert(ack_count == 0);
+    assert(gy_times[0] == 100000); // Actual I2C acquisition, not a publication timer.
+    for (unsigned i = 1; i < gy_count; ++i) {
+        int64_t period_us = rounding && i >= 23 ? 110000 : 100000;
         int64_t delta = gy_times[i] - gy_times[i - 1];
         if (ml_slow && i == 10) assert(delta == 350000); // 250 ms stall + full period.
         else if (ml_jitter && i == 10) assert(delta == 110000);
@@ -1140,17 +1143,21 @@ int main(int argc, char **argv)
         assert(!gy_count && sensor_status_get(SENSOR_GY511, &status));
         assert(status.state == SENSOR_UNAVAILABLE);
     } else {
-        for (unsigned i = 0; i < 5; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
+        unsigned initial_reads = slow_read ? 21U : 23U;
+        for (unsigned i = 0; i < initial_reads; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
         if (changes) {
-            assert(gy_times[5] == 3100000 && gy_times[6] == 5100000);
-            for (unsigned i = 7; i < gy_count; ++i) assert(gy_times[i] == 5600000 + (i - 7) * 500000LL);
+            assert(gy_times[23] == 3300000 && gy_times[24] == 5300000);
+            for (unsigned i = 25; i < gy_count; ++i) assert(gy_times[i] == 5800000 + (i - 25) * 500000LL);
         } else if (slow_read) {
             assert(acks[0].at_us == 2800000); // Receipt during I2C cannot ACK application early.
-            for (unsigned i = 5; i < gy_count; ++i) assert(gy_times[i] == 3100000 + (i - 5) * 1000000LL);
+            for (unsigned i = 21; i < gy_count; ++i) assert(gy_times[i] == 3100000 + (i - 21) * 1000000LL);
         } else if (rounding) {
-            for (unsigned i = 5; i < gy_count; ++i) assert(gy_times[i] == 2610000 + (i - 5) * 510000LL);
+            for (unsigned i = 23; i < gy_count; ++i) assert(gy_times[i] == 2810000 + (i - 23) * 510000LL);
+        } else if (burst || shorten) {
+            for (unsigned i = 23; i < gy_count; ++i) assert(gy_times[i] == 2800000 + (i - 23) * 500000LL);
         } else {
-            for (unsigned i = 5; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 500000LL);
+            assert(gy_count == 81);
+            for (unsigned i = 23; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
         }
     }
     if (burst) assert(notify_busy > 0);
