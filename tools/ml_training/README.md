@@ -1,4 +1,114 @@
-# GY-511 Phase 2: preliminary REST/MOVING Model A
+# GY-511 REST/MOVING training: Model A and lightweight Model B
+
+## Phase 4B: Model B firmware readiness
+
+The firmware now supports both frozen model descriptors and an explicit
+development-time `MOTION_BOOT_MODEL=A|B` startup selection (default A).
+See [the firmware handoff](../../docs/motion_ml_phase4b.md) for architecture,
+host/build evidence, exact flash/monitor commands and expected Model B logs.
+The owner has confirmed Model A hardware REST/MOVING at 100 ms with observed
+230–380 us inference. Model B hardware verification is still pending.
+The Phase 4A records below describe the earlier laptop-only milestone; no
+training/evaluation artifacts were changed by firmware integration.
+
+## Phase 4A: Model B, laptop only
+
+Model A and its working Phase 3 firmware remain unchanged. Model B is
+`60 -> Dense(8, ReLU) -> Dense(2, logits)`, **506 trainable parameters**
+versus A's 1,010. Its frozen exports, metadata, quantization parameters,
+SHA-256 checksums and four golden vectors are in
+[`models/motion_model_b/`](../../models/motion_model_b/).
+The first independent result is in
+[`motion_model_b_evaluation_01/`](../../models/motion_model_b_evaluation_01/),
+with the full A/B comparison and host compatibility evidence in
+[`COMPARISON.md`](../../models/motion_model_comparison_01/COMPARISON.md)
+and [`comparison.json`](../../models/motion_model_comparison_01/comparison.json).
+
+Training/calibration uses only `rest_orientation_01.csv`,
+`moving_directions_01.csv` and `moving_directions_02.csv`: 168 windows
+(58 REST, 110 MOVING). `--model b` verifies their bytes against A's manifest,
+requires A's unchanged preprocessing/runtime and input contract, and fixes
+the same seed 20261028, 150 epochs, batch 16 and Adam learning rate 0.001.
+It uses the final epoch without validation, early stopping or model selection.
+The 20-sample, 10 Hz, stride-10 contract and >150 ms gap rejection are unchanged.
+The correctly recorded `rest_orientation_02_retry` session in
+`rest_orientation_02.csv` and `moving_directions_03.csv` are read only by
+evaluation after freezing the model. No held-out data enters calibration or tuning.
+
+Both models achieve 168/168 training accuracy and Keras/Float32/INT8 class
+agreement. On the same 112 independent windows (56 per class), A scores
+99.11% in all three formats; B scores **97.32% Keras/Float32** and
+**93.75% INT8**. B's Keras/INT8 agreement is 108/112 (96.43%): four MOVING
+predictions become REST. Both models clip 157/6,720 independent INT8 input
+elements (2.34%), and zero training inputs. These results are retained without
+retuning. The comparison is limited to the fixed desk REST / continuous hand
+movement demo; two sessions with overlapping windows do not establish generalization.
+
+B export sizes: Keras **27,310 bytes**, Float32 TFLite **3,484 bytes**,
+INT8 TFLite **2,384 bytes** (23.20% smaller than A's 3,104 bytes).
+INT8 SHA-256: `6ec06da5b5fe3d12fdd99328be1e8adf10bc3d78f3c7191bcb06dcd2f5279aff`.
+Narrow `.gitattributes` entries preserve the new artifacts and hashed training/
+host source bytes through Git checkout, preventing line-ending hash drift.
+Its input scale/zero point is `0.0031422548927366734 / 12`;
+output is `0.0462011881172657 / -29`. Both fully connected operators are
+version 4 with per-channel INT8 weights, INT32 biases, fused ReLU then no
+activation, and static INT8 `[1,60]` / `[1,2]` tensors.
+
+The installed esp-tflite-micro 1.4.1 and ESP-NN 1.3.0 ANSI host kernels run B
+through the unmodified production Engine. Both match desktop INT8 bytes on
+168 training, 112 independent and four golden vectors. This checks the engine
+and operator contract, not ESP32-S3 assembly kernels, actual inference latency
+or target RAM. Firmware still embeds Model A. B deployment, hardware measurement,
+MQTT upload and model switching remain later work.
+
+### Reproduce Phase 4A
+
+Use the existing isolated ML venv, never the ESP-IDF Python environment for
+TensorFlow. Exact package versions are in B's `environment.lock.txt`.
+The original commands were:
+
+```powershell
+& tools/ml_training/.venv/Scripts/python.exe tools/ml_training/train.py --model b --seed 20261028 --epochs 150 --batch-size 16 --learning-rate 0.001
+& tools/ml_training/.venv/Scripts/python.exe tools/ml_training/train.py --model b --output-dir build/phase4a_reproduction --seed 20261028 --epochs 150 --batch-size 16 --learning-rate 0.001
+& tools/ml_training/.venv/Scripts/python.exe tools/ml_training/evaluate.py --model-dir models/motion_model_b --output-dir models/motion_model_b_evaluation_01
+```
+
+Outputs are immutable: commands refuse existing directories. For a new repeat,
+choose fresh `--output-dir` paths and pass the matching `--model-dir` to
+evaluation. The repeat run above, completed before B's first independent
+evaluation, reproduced canonical weights, both TFLite binaries, golden/test
+vectors and training history exactly. Archive and manifest timestamps may differ.
+
+Build only the **host** compatibility runners (CMake/Ninja and GCC/G++ on PATH;
+adjust local tool paths as necessary; no ESP-IDF firmware build is needed):
+
+```powershell
+cmake -S tests/motion_host -B build/motion_host -G Ninja `
+  -DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe `
+  -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe `
+  -DIDF_PATH=D:/ESP/.espressif/v5.5.5/esp-idf `
+  -DPYTHON=C:/Espressif/tools/python/v5.5.5/venv/Scripts/python.exe
+cmake --build build/motion_host -j 4
+& tools/ml_training/.venv/Scripts/python.exe tools/ml_training/compare_models.py --reproduction-dir build/phase4a_reproduction --output-dir models/motion_model_comparison_01
+& tools/ml_training/.venv/Scripts/python.exe -m unittest discover -s tools/ml_training -p 'test_*.py' -v
+& tools/ml_training/.venv/Scripts/python.exe tests/motion_host/run.py
+python -m unittest discover -s tools/ml_data_collection -p 'test_*.py' -v
+& tools/ml_training/.venv/Scripts/python.exe -m pip check
+```
+
+For comparison reruns select a fresh output directory; the script verifies the
+frozen A/B evaluations, matching recording hashes/windows, reproduction hashes
+and real host outputs before writing its report. Validation passed: **35 ML
+Python tests**, **20 collector tests** (two optional Paho socket tests skipped
+because Paho is absent from the default interpreter), and package consistency.
+The host regression suite also checks the existing A bundle and production
+preprocessing/quantization, engine and worker behavior.
+
+## Archived Phase 2 implementation record
+
+The following sections record the original Model A training phase, including
+its then-pending evaluation and deployment work. Model A has since passed
+independent evaluation and user-reported Phase 3 hardware verification.
 
 This is a trained TensorFlow/Keras neural network for a narrow demonstration:
 flat stationary desk **REST=0**, and continuous hand movement/shaking

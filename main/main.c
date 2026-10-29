@@ -70,14 +70,8 @@ static void gy511_reader_task(void *arg)
             if (!pending_update &&
                 xTaskNotifyWait(0, UINT32_MAX, &control, 0) != pdTRUE) break;
             pending_update = false;
-            mqtt_config_update_t update = {.sensor = SENSOR_GY511};
-            if (control & CONFIG_ENABLED_FLAG) {
-                update.operation = MQTT_CONFIG_ENABLED;
-                update.enabled = (control & 1) != 0;
-            } else {
-                update.operation = MQTT_CONFIG_INTERVAL;
-                update.interval_ms = control;
-            }
+            mqtt_config_update_t update;
+            if (!mqtt_manager_take_owner_config(SENSOR_GY511, &update)) continue;
             // Validate availability/disabled policy HERE, after all older
             // commands have committed, not against a dispatcher snapshot.
             sensor_status_t status;
@@ -112,7 +106,8 @@ static void gy511_reader_task(void *arg)
                 ESP_LOGI("SENSOR", "gy511   | HEALTH | config_period_ms=%lu",
                        (unsigned long)active_interval_ms);
             }
-            motion_ml_configure(active_interval_ms, ++ml_generation, ml_enabled);
+            ml_generation = update.generation;
+            motion_ml_configure(active_interval_ms, ml_generation, ml_enabled);
             (void)mqtt_manager_publish_config_ack(&update);
         }
 
@@ -341,8 +336,11 @@ void app_main(void)
                 // has a notification. No ACK until that reader commits it.
                 uint32_t control = update.operation == MQTT_CONFIG_ENABLED ?
                     CONFIG_ENABLED_FLAG | (uint32_t)update.enabled : update.interval_ms;
-                if (xTaskNotify(reader, control,
-                                eSetValueWithoutOverwrite) != pdPASS) break;
+                if (!mqtt_manager_stage_owner_config(&update)) break;
+                if (xTaskNotify(reader, control, eSetValueWithoutOverwrite) != pdPASS) {
+                    mqtt_manager_cancel_owner_config(update.sensor);
+                    break;
+                }
                 mqtt_manager_take_config_update(&update);
                 continue;
             }

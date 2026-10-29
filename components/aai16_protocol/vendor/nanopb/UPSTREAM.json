@@ -1,0 +1,20 @@
+{
+  "version": "0.4.9.2",
+  "tag": "nanopb-0.4.9.2",
+  "source": "https://github.com/nanopb/nanopb",
+  "archive_sha256": "324e5ef3e9bf2ac549e54f660f852943148f35629ebe88824eacfc37929168f9",
+  "files": {
+    "LICENSE.txt": "e2f2fc8fe3faa7dcb09dbe995db48c6ec5c1f72705db915101e4a83fed44f66d",
+    "generator/nanopb_generator.py": "67d3c5e6de1e5dbd9f45bb4e5b7055d888d1afd6d6e1690791ab8607b6c6b738",
+    "generator/proto/__init__.py": "b387c9a6a553ed2184cf8c67243bb26b27bd46baf44465f0d5ffeb139c365105",
+    "generator/proto/_utils.py": "6d091e256cdda09002c357da4901d259078fe1ef53a010392a251dd1107d6313",
+    "generator/proto/nanopb.proto": "1a50d0822c5ba4395297755b11864af952053be3e0dc44c860f988b1b73c3c55",
+    "pb.h": "e0db84a27e0d41a2d2d347b8c879e30ceb856d36dc192cce0f1124f833c67bc2",
+    "pb_common.c": "8d2ec28baaaf2b7a5e90e4cb2fa9700d21cef7f826f051a637c30b7a1e6a0516",
+    "pb_common.h": "6495a691aca68d6973f2274b5dd54b74fbb57f6b019c45fff255a857fe1abcfd",
+    "pb_decode.c": "f5b425beaa207251e531c8ce2c86c9b6867e2920ed59cc1b125332af0c147632",
+    "pb_decode.h": "fcac5f7680fe6e870157e4bcf34d5162bdd4fff0d7db3cad1122f2ad24a6da87",
+    "pb_encode.c": "debb0714dff8d1515b9724eae45531cad912f12028a0311fc3e2c694689e1fed",
+    "pb_encode.h": "9aa00fee4ff08adf0da16e33a55be08810ea657800a648dc78f82e89c60c10cf"
+  }
+}

@@ -1,6 +1,6 @@
 
 idf_component_register(
-    SRCS "mqtt_manager.c"
+    SRCS "mqtt_manager.c" "config_transactions.c"
     INCLUDE_DIRS "include"
     REQUIRES
         mqtt
@@ -10,5 +10,5 @@ idf_component_register(
         sensor_status
         ld2450_sensor
         hcsr04p_sensor
-    PRIV_REQUIRES esp_timer esp_hw_support mhz1911a_sensor motion_ml
+    PRIV_REQUIRES aai16_protocol esp_timer esp_hw_support mhz1911a_sensor motion_ml model_upload
 )

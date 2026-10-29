@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "motion_model_control.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,6 +27,8 @@ typedef struct {
 // A plain bounded result; serialization belongs to the transport adapter.
 typedef struct motion_result {
     char model_version[40];
+    motion_model_identity_t model_identity;
+    uint32_t model_epoch;
     motion_status_t status;
     bool model_ready;
     int8_t class_id; // -1 when there is no prediction; REST=0, MOVING=1.

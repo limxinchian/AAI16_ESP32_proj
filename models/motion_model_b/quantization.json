@@ -1,0 +1,405 @@
+{
+  "method": "post-training full integer quantization, TFLITE_BUILTINS_INT8",
+  "representative_vectors": 168,
+  "representative_source": "all training windows only",
+  "float32": {
+    "input": {
+      "name": "serving_default_features:0",
+      "index": 0,
+      "shape": [
+        1,
+        60
+      ],
+      "shape_signature": [
+        1,
+        60
+      ],
+      "dtype": "float32",
+      "scales": [],
+      "zero_points": [],
+      "quantized_dimension": 0
+    },
+    "output": {
+      "name": "StatefulPartitionedCall_1:0",
+      "index": 6,
+      "shape": [
+        1,
+        2
+      ],
+      "shape_signature": [
+        1,
+        2
+      ],
+      "dtype": "float32",
+      "scales": [],
+      "zero_points": [],
+      "quantized_dimension": 0
+    },
+    "operators": [
+      {
+        "operator": "FULLY_CONNECTED",
+        "version": 1,
+        "inputs": [
+          0,
+          3,
+          4
+        ],
+        "outputs": [
+          5
+        ],
+        "fused_activation": "RELU"
+      },
+      {
+        "operator": "FULLY_CONNECTED",
+        "version": 1,
+        "inputs": [
+          5,
+          2,
+          1
+        ],
+        "outputs": [
+          6
+        ],
+        "fused_activation": "NONE"
+      }
+    ],
+    "tensors": [
+      {
+        "name": "serving_default_features:0",
+        "index": 0,
+        "shape": [
+          1,
+          60
+        ],
+        "shape_signature": [
+          1,
+          60
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "arith.constant",
+        "index": 1,
+        "shape": [
+          2
+        ],
+        "shape_signature": [
+          2
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "arith.constant1",
+        "index": 2,
+        "shape": [
+          2,
+          8
+        ],
+        "shape_signature": [
+          2,
+          8
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "motion_model_b_1/hidden_1/MatMul",
+        "index": 3,
+        "shape": [
+          8,
+          60
+        ],
+        "shape_signature": [
+          8,
+          60
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "motion_model_b_1/hidden_1/Relu;motion_model_b_1/hidden_1/BiasAdd",
+        "index": 4,
+        "shape": [
+          8
+        ],
+        "shape_signature": [
+          8
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "motion_model_b_1/hidden_1/MatMul;motion_model_b_1/hidden_1/Relu;motion_model_b_1/hidden_1/BiasAdd",
+        "index": 5,
+        "shape": [
+          1,
+          8
+        ],
+        "shape_signature": [
+          1,
+          8
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "StatefulPartitionedCall_1:0",
+        "index": 6,
+        "shape": [
+          1,
+          2
+        ],
+        "shape_signature": [
+          1,
+          2
+        ],
+        "dtype": "float32",
+        "scales": [],
+        "zero_points": [],
+        "quantized_dimension": 0
+      }
+    ]
+  },
+  "int8": {
+    "input": {
+      "name": "serving_default_features:0",
+      "index": 0,
+      "shape": [
+        1,
+        60
+      ],
+      "shape_signature": [
+        1,
+        60
+      ],
+      "dtype": "int8",
+      "scales": [
+        0.0031422548927366734
+      ],
+      "zero_points": [
+        12
+      ],
+      "quantized_dimension": 0
+    },
+    "output": {
+      "name": "StatefulPartitionedCall_1:0",
+      "index": 6,
+      "shape": [
+        1,
+        2
+      ],
+      "shape_signature": [
+        1,
+        2
+      ],
+      "dtype": "int8",
+      "scales": [
+        0.0462011881172657
+      ],
+      "zero_points": [
+        -29
+      ],
+      "quantized_dimension": 0
+    },
+    "operators": [
+      {
+        "operator": "FULLY_CONNECTED",
+        "version": 4,
+        "inputs": [
+          0,
+          4,
+          3
+        ],
+        "outputs": [
+          5
+        ],
+        "fused_activation": "RELU"
+      },
+      {
+        "operator": "FULLY_CONNECTED",
+        "version": 4,
+        "inputs": [
+          5,
+          2,
+          1
+        ],
+        "outputs": [
+          6
+        ],
+        "fused_activation": "NONE"
+      }
+    ],
+    "tensors": [
+      {
+        "name": "serving_default_features:0",
+        "index": 0,
+        "shape": [
+          1,
+          60
+        ],
+        "shape_signature": [
+          1,
+          60
+        ],
+        "dtype": "int8",
+        "scales": [
+          0.0031422548927366734
+        ],
+        "zero_points": [
+          12
+        ],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "tfl.pseudo_qconst",
+        "index": 1,
+        "shape": [
+          2
+        ],
+        "shape_signature": [
+          2
+        ],
+        "dtype": "int32",
+        "scales": [
+          0.00014057198131922632,
+          0.00014489403110928833
+        ],
+        "zero_points": [
+          0
+        ],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "tfl.pseudo_qconst1",
+        "index": 2,
+        "shape": [
+          2,
+          8
+        ],
+        "shape_signature": [
+          2,
+          8
+        ],
+        "dtype": "int8",
+        "scales": [
+          0.0139423543587327,
+          0.014371028169989586
+        ],
+        "zero_points": [
+          0
+        ],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "tfl.pseudo_qconst2",
+        "index": 3,
+        "shape": [
+          8
+        ],
+        "shape_signature": [
+          8
+        ],
+        "dtype": "int32",
+        "scales": [
+          3.145525261061266e-05,
+          2.807931559800636e-05,
+          2.9134667784092017e-05,
+          3.4474047424737364e-05,
+          6.394213414750993e-06,
+          2.831042729667388e-05,
+          2.561424480518326e-05,
+          2.2326667021843605e-05
+        ],
+        "zero_points": [
+          0
+        ],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "tfl.pseudo_qconst3",
+        "index": 4,
+        "shape": [
+          8,
+          60
+        ],
+        "shape_signature": [
+          8,
+          60
+        ],
+        "dtype": "int8",
+        "scales": [
+          0.010010408237576485,
+          0.008936040103435516,
+          0.009271898306906223,
+          0.01097111776471138,
+          0.0020349123515188694,
+          0.009009589441120625,
+          0.00815154891461134,
+          0.007105301134288311
+        ],
+        "zero_points": [
+          0
+        ],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "motion_model_b_1/hidden_1/MatMul;motion_model_b_1/hidden_1/Relu;motion_model_b_1/hidden_1/BiasAdd",
+        "index": 5,
+        "shape": [
+          1,
+          8
+        ],
+        "shape_signature": [
+          1,
+          8
+        ],
+        "dtype": "int8",
+        "scales": [
+          0.010082370601594448
+        ],
+        "zero_points": [
+          -128
+        ],
+        "quantized_dimension": 0
+      },
+      {
+        "name": "StatefulPartitionedCall_1:0",
+        "index": 6,
+        "shape": [
+          1,
+          2
+        ],
+        "shape_signature": [
+          1,
+          2
+        ],
+        "dtype": "int8",
+        "scales": [
+          0.0462011881172657
+        ],
+        "zero_points": [
+          -29
+        ],
+        "quantized_dimension": 0
+      }
+    ]
+  },
+  "training_feature_min": -0.4410499930381775,
+  "training_feature_max": 0.36022499203681946,
+  "training_input_elements_clipped": 0,
+  "warning": "Calibration uses observed training range; stronger future movement may clip INT8 inputs"
+}

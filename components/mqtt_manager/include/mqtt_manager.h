@@ -21,6 +21,12 @@ typedef struct {
         uint32_t interval_ms;
         bool enabled;
     };
+    uint64_t request_id;
+    uint32_t expected_generation;
+    uint32_t target_boot_id;
+    uint32_t generation; // Assigned by owner_begin, committed only on success.
+    bool has_expected_generation;
+    bool has_target_boot_id;
 } mqtt_config_update_t;
 
 // Initialize once before any sensor tasks use this manager. Client retries
@@ -28,8 +34,9 @@ typedef struct {
 esp_err_t mqtt_manager_init(void);
 // Stable identity assigned during init, also shared by local ML windows.
 uint32_t mqtt_manager_boot_id(void);
-// Temporary JSON adapter for a transport-independent bounded ML result.
-// Uses the existing zero-wait, QoS0, non-retained telemetry path and diagnostics.
+// Binary aai16.Envelope.ml_prediction on aai16/ml/motion/data, QoS 0, not retained.
+// Fixed-buffer encoding + zero-wait queue copy; ESP_OK means local acceptance.
+// Uses the existing telemetry freshness policy and drop diagnostics.
 esp_err_t mqtt_manager_publish_motion(const motion_result_t *result);
 
 // Publication functions copy into a bounded local queue with zero queue wait.
@@ -181,6 +188,17 @@ esp_err_t mqtt_manager_publish_gy511_at(
 // All eight sensors start enabled with default intervals after each boot.
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out);
 bool mqtt_manager_take_config_update(mqtt_config_update_t *out);
+
+// app_main reserves a single sidecar before its no-overwrite notification.
+// Cancel only if notification delivery fails. The owner consumes the sidecar
+// after receiving that notification; the word itself is only a wakeup token.
+bool mqtt_manager_stage_owner_config(const mqtt_config_update_t *update);
+void mqtt_manager_cancel_owner_config(sensor_id_t sensor);
+bool mqtt_manager_take_owner_config(sensor_id_t sensor, mqtt_config_update_t *out);
+// Revalidate bounds, identity and expected generation in the owner before any
+// mutation. Validation failures are cached and submitted as failure ACKs;
+// invalid internal identities fail closed. Never ACK on dispatch.
+bool mqtt_manager_begin_owner_config(mqtt_config_update_t *update);
 
 // Call only from app_main. DIAGNOSTIC_PERIOD_MS in mqtt_manager.c defaults to
 // 60000; use 10000 for detailed testing. Connection/errors log immediately.

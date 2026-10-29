@@ -1,0 +1,299 @@
+syntax = "proto2";
+package aai16;
+
+// Wire protocol v1. All fields use explicit presence; zero/false is not absence.
+// Bounds live in aai16.options; application validation lives in aai16_protocol.c.
+// Existing C sensor_id_t values are NOT wire IDs: translate explicitly in Stage 2.
+enum SensorId {
+  SENSOR_UNSPECIFIED = 0;
+  SENSOR_DHT22 = 1;
+  SENSOR_GY511 = 2;
+  SENSOR_RC522 = 3;
+  SENSOR_LD2450 = 4;
+  SENSOR_HCSR04P = 5;
+  SENSOR_MHZ1911A = 6;
+  SENSOR_BME280 = 7;
+  SENSOR_MAX6675 = 8;
+}
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_VALIDATE = 1;
+  PHASE_APPLY = 2;
+  PHASE_ROLLBACK = 3;
+  PHASE_COMMIT = 4;
+}
+enum ResultCode {
+  RESULT_OK = 0;
+  RESULT_MALFORMED = 1;
+  RESULT_TOO_LARGE = 2;
+  RESULT_UNSUPPORTED_VERSION = 3;
+  RESULT_UNSUPPORTED_SENSOR = 4;
+  RESULT_OUT_OF_RANGE = 5;
+  RESULT_AMBIGUOUS_OPERATION = 6;
+  RESULT_MISSING_FIELD = 7;
+  RESULT_SENSOR_DISABLED = 8;
+  RESULT_SENSOR_UNAVAILABLE = 9;
+  RESULT_QUEUE_FULL = 10;
+  RESULT_STALE_GENERATION = 11;
+  RESULT_BUSY = 12;
+  RESULT_NOT_SUPPORTED = 13;
+  RESULT_CHECKSUM_MISMATCH = 14;
+  RESULT_INTERNAL_ERROR = 15;
+}
+
+message SensorConfig {
+  optional SensorId sensor = 1;
+  // Exactly ONE operation. Both present is rejected, even if enabled=false.
+  optional bool enabled = 2;
+  optional uint32 interval_ms = 3;
+  optional fixed32 expected_generation = 4;
+  // No additional sensor settings are currently exposed by the firmware.
+  // Add typed settings only alongside an owner implementation and validation.
+}
+message SensorProfile {
+  // Complete owner profile / saved state: all three fields must be present.
+  // A disabled profile retains a valid interval for subsequent re-enable.
+  optional SensorId sensor = 1;
+  optional bool enabled = 2;
+  optional uint32 interval_ms = 3;
+}
+message ApplyConfig {
+  // Owner handoff. Envelope carries request_id, generation, boot_id and phase.
+  optional SensorProfile profile = 1;
+}
+message ConfigAck {
+  optional SensorId sensor = 1;
+  optional ResultCode result = 2;
+  optional string detail = 3;
+  // Echo the attempted operation when it could be decoded/validated.
+  optional SensorConfig requested = 4;
+  // Only an owner-generated successful APPLY/ROLLBACK ACK may carry this.
+  optional SensorProfile effective = 5;
+}
+
+message Vector3 { optional float x = 1; optional float y = 2; optional float z = 3; }
+message Dht22Reading { optional float temperature_c = 1; optional float humidity_pct = 2; }
+message Gy511Reading {
+  optional Vector3 acceleration_g = 1;
+  optional Vector3 magnetic_field_ut = 2;
+  optional sint64 jitter_us = 3;
+}
+message Rc522Event { optional bytes uid = 1; } // One card presentation; length 4, 7 or 10.
+message RadarTarget {
+  optional uint32 slot = 1; // Physical slot 1..3, retained even when not present.
+  optional bool present = 2;
+  optional sint32 x_mm = 3;
+  optional sint32 y_mm = 4;
+  optional sint32 speed_cm_s = 5;
+  optional uint32 resolution_mm = 6;
+}
+message Ld2450Reading { repeated RadarTarget targets = 1; } // Three slots.
+message Hcsr04pReading { optional float distance_cm = 1; optional float echo_us = 2; }
+message Mhz1911aReading { optional uint32 co2_ppm = 1; }
+message Bme280Reading {
+  optional float temperature_c = 1;
+  optional float pressure_hpa = 2;
+  optional float humidity_pct = 3; // Absent for BMP280; never substitute zero.
+}
+message Max6675Reading { optional float temperature_c = 1; }
+enum SensorHealth {
+  HEALTH_UNSPECIFIED = 0;
+  HEALTH_DISABLED = 1;
+  HEALTH_UNINITIALIZED = 2;
+  HEALTH_READY = 3;
+  HEALTH_DEGRADED = 4;
+  HEALTH_UNAVAILABLE = 5;
+}
+message SensorTelemetry {
+  optional SensorId sensor = 1;
+  // Uptime metadata, never wall time. Envelope sequence keeps the existing
+  // sensor-specific attempt/event semantics; generation is optional if unavailable.
+  optional uint64 acquired_us = 2;
+  optional uint64 uptime_us = 3;
+  optional SensorHealth health = 4;
+  optional uint32 interval_ms = 5;
+  oneof reading {
+    Dht22Reading dht22 = 10;
+    Gy511Reading gy511 = 11;
+    Rc522Event rc522 = 12;
+    Ld2450Reading ld2450 = 13;
+    Hcsr04pReading hcsr04p = 14;
+    Mhz1911aReading mhz1911a = 15;
+    Bme280Reading bme280 = 16;
+    Max6675Reading max6675 = 17;
+  }
+}
+
+enum ModelFamily { MODEL_UNSPECIFIED = 0; MODEL_A = 1; MODEL_B = 2; }
+enum ModelSource { SOURCE_UNSPECIFIED = 0; SOURCE_BUNDLED = 1; SOURCE_STORED = 2; }
+message ModelIdentity {
+  optional ModelFamily family = 1;
+  optional string version = 2;
+  optional bytes sha256 = 3; // Exactly 32 bytes, not hex text.
+  optional ModelSource source = 4;
+  optional uint32 bank = 5; // Present only for stored models; 0 or 1.
+}
+enum MotionClass { CLASS_UNKNOWN = 0; CLASS_REST = 1; CLASS_MOVING = 2; }
+enum MotionStatus {
+  MOTION_UNSPECIFIED = 0;
+  MOTION_COLLECTING = 1;
+  MOTION_PREDICTION = 2;
+  MOTION_REQUIRES_100MS = 3;
+  MOTION_INVALID_SAMPLE = 4;
+  MOTION_DISCONTINUITY = 5;
+  MOTION_NO_DATA = 6;
+  MOTION_QUEUE_OVERFLOW = 7;
+  MOTION_INIT_FAILED = 8;
+  MOTION_INVOKE_FAILED = 9;
+  MOTION_SENSOR_DISABLED = 10;
+  MOTION_SENSOR_UNAVAILABLE = 11;
+  MOTION_SWITCHING = 12;
+}
+enum Backend { BACKEND_UNSPECIFIED = 0; BACKEND_TFLM_REFERENCE = 1; BACKEND_ESP_NN_ANSI = 2; BACKEND_ESP_NN_OPTIMIZED = 3; }
+// ML predictions and health/status on aai16/ml/motion/data (binary Envelope).
+// Envelope.boot_id identifies the boot; Envelope.generation is the sensor config
+// generation captured with this result. Sample/Invoke fields apply to predictions.
+message MlPrediction {
+  optional ModelIdentity model = 1;
+  optional fixed32 model_epoch = 2;
+  optional MotionStatus status = 3;
+  optional bool model_ready = 4;
+  optional MotionClass classification = 5;
+  optional fixed32 first_sequence = 6;
+  optional fixed32 last_sequence = 7;
+  optional uint32 interval_ms = 8;
+  optional uint64 window_start_us = 9;
+  optional uint64 window_end_us = 10;
+  optional uint64 uptime_us = 11;
+  optional uint64 inference_us = 12; // Elapsed Invoke wrapper time, including copies.
+  optional bytes output_int8 = 13; // Two signed int8 values represented as raw bytes.
+  repeated float logits = 14 [packed = true]; // REST, MOVING; not probabilities.
+  optional uint32 clipped = 15;
+  optional uint32 clipped_total = 16;
+  optional uint32 queue_drops = 17;
+  optional uint32 window_resets = 18;
+  optional uint32 invoke_failures = 19;
+  optional uint32 arena_reserved_bytes = 20;
+  optional uint32 arena_used_bytes = 21;
+  optional uint32 internal_free_bytes = 22;
+  optional uint32 internal_min_bytes = 23;
+  optional Backend backend = 24;
+  optional bool trial = 25;
+}
+
+enum ModelOperation {
+  MODEL_OP_UNSPECIFIED = 0;
+  MODEL_OP_BEGIN_UPLOAD = 1;
+  MODEL_OP_FINISH_UPLOAD = 2;
+  MODEL_OP_ABORT_UPLOAD = 3;
+  MODEL_OP_ACTIVATE = 4;
+  MODEL_OP_ROLLBACK = 5;
+  MODEL_OP_GET_STATUS = 6;
+  MODEL_OP_LIST = 7;
+}
+message UploadManifest {
+  optional ModelFamily family = 1;
+  optional string version = 2;
+  optional uint32 package_size = 3;
+  optional bytes package_sha256 = 4;
+  optional uint32 model_size = 5;
+  optional bytes model_sha256 = 6;
+  optional uint32 compatibility_profile = 7; // 1 = current dense INT8 motion contract.
+}
+message ModelControl {
+  optional ModelOperation operation = 1;
+  optional bytes transfer_id = 2; // Exactly 16 bytes for upload operations.
+  optional UploadManifest upload = 3; // BEGIN only.
+  optional ModelIdentity target = 4; // ACTIVATE only: full identity, no family-only selection.
+  // Required for ACTIVATE/ROLLBACK, alongside Envelope boot_id/generation.
+  // Epoch changes only on a committed switch or automatic live-failure rollback.
+  optional fixed32 expected_model_epoch = 5;
+}
+// Convenience intent resolved against device state when the model-control worker
+// admits it. Existing ModelControl remains the boot/epoch-bound advanced API.
+// Mutations share its request-ID cache and still use the same ML checkpoint.
+message ModelSelection {
+  optional ModelOperation operation = 1; // ACTIVATE or ROLLBACK only.
+  // ACTIVATE only: A = bundled A; B = newest committed stored B by commit serial.
+  // No fallback to another stored bank if the selected candidate fails checks.
+  optional ModelFamily family = 2;
+}
+message ModelUploadChunk {
+  optional bytes transfer_id = 1;
+  optional uint32 offset = 2; // Package byte offset, not a flash address.
+  optional bytes data = 3; // 1..512 bytes. Envelope sequence/generation are mandatory.
+}
+enum UploadState {
+  UPLOAD_UNSPECIFIED = 0;
+  UPLOAD_ACCEPTED = 1;
+  UPLOAD_RECEIVING = 2;
+  UPLOAD_VERIFYING = 3;
+  UPLOAD_STORED = 4;
+  UPLOAD_ABORTED = 5;
+  UPLOAD_REJECTED = 6;
+}
+message ModelUploadAck {
+  optional bytes transfer_id = 1;
+  optional ResultCode result = 2;
+  optional UploadState state = 3;
+  optional uint32 next_offset = 4;
+  optional uint32 max_chunk_bytes = 5;
+  optional string detail = 6;
+}
+enum ModelState {
+  MODEL_STATE_UNSPECIFIED = 0;
+  MODEL_STATE_RUNNING = 1;
+  MODEL_STATE_STORED = 2;
+  MODEL_STATE_SWITCHING = 3;
+  MODEL_STATE_TRIAL = 4;
+  MODEL_STATE_ROLLED_BACK = 5;
+  MODEL_STATE_UNAVAILABLE = 6;
+}
+message ModelStatus {
+  // Also the application completion ACK for ACTIVATE/ROLLBACK (request_id echoed).
+  // Spontaneous boot/rollback updates omit request_id. No config Phase is used.
+  optional ResultCode result = 1;
+  optional ModelState state = 2;
+  optional ModelIdentity active = 3;
+  optional ModelIdentity previous = 4;
+  repeated ModelIdentity stored = 5; // At most four banks; bundled model is separate.
+  optional fixed32 model_epoch = 6;
+  optional Backend backend = 7;
+  optional string detail = 8;
+}
+
+message Envelope {
+  optional uint32 protocol_version = 1; // Exactly 1.
+  optional fixed64 request_id = 2; // Nonzero on requests and correlated replies.
+  optional fixed32 boot_id = 3;
+  optional fixed32 generation = 4; // Config generation, or upload-session generation.
+  optional Phase phase = 5; // Config transaction phase, not a transport receipt.
+  optional fixed32 sequence = 6; // Sensor event/attempt sequence or upload chunk sequence.
+  oneof body {
+    SensorConfig sensor_config = 10;
+    ConfigAck config_ack = 11;
+    ApplyConfig apply_config = 12;
+    SensorTelemetry sensor_telemetry = 20;
+    MlPrediction ml_prediction = 21;
+    ModelControl model_control = 30;
+    ModelUploadChunk model_upload_chunk = 31;
+    ModelUploadAck model_upload_ack = 32;
+    ModelStatus model_status = 33;
+    ModelSelection model_selection = 34;
+  }
+}
+
+message ConfigSnapshot {
+  optional uint32 schema_version = 1; // Exactly 1.
+  optional fixed32 generation = 2;
+  repeated SensorProfile sensors = 3; // Exactly one complete profile for each of eight sensors.
+}
+message PersistentConfigRecord {
+  optional uint32 format_version = 1; // Exactly 1.
+  optional fixed64 record_sequence = 2; // Monotonic storage-record sequence.
+  optional bytes snapshot = 3; // Exact encoded ConfigSnapshot, at most 512 bytes.
+  // CRC-32/ISO-HDLC over LE32(format_version), LE64(record_sequence),
+  // LE32(snapshot length), then snapshot bytes. Integrity, not authentication.
+  optional fixed32 crc32 = 4;
+  optional fixed32 commit_marker = 5; // 0x41414916. Storage transaction is a later stage.
+}

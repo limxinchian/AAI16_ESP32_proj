@@ -70,14 +70,8 @@ static void ld2450_reader_task(void *arg)
         for (unsigned commands = 0; commands < 4; ++commands) {
             uint32_t control;
             if (xTaskNotifyWait(0, UINT32_MAX, &control, 0) != pdTRUE) break;
-            mqtt_config_update_t update = {.sensor = SENSOR_LD2450};
-            if (control & CONFIG_ENABLED_FLAG) {
-                update.operation = MQTT_CONFIG_ENABLED;
-                update.enabled = (control & 1) != 0;
-            } else {
-                update.operation = MQTT_CONFIG_INTERVAL;
-                update.interval_ms = control;
-            }
+            mqtt_config_update_t update;
+            if (!mqtt_manager_take_owner_config(SENSOR_LD2450, &update)) continue;
             sensor_status_t status;
             if (!config_can_apply(&update, &status)) continue;
             if (update.operation == MQTT_CONFIG_ENABLED && update.enabled && !enabled) {

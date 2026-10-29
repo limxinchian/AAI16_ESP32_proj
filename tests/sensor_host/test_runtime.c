@@ -68,6 +68,7 @@ static int64_t ultra_first_delay_us;
 static bool ultra_recover_on_enable;
 static unsigned ultra_active_notifications;
 static int64_t ultra_times[1024];
+extern unsigned test_config_sidecar_busy;
 static unsigned notify_busy, diagnostics, dht_count, gy_count, dht_tx, gy_tx;
 static int64_t dht_times[128], gy_times[2048];
 static mqtt_config_update_t queue[4];
@@ -401,8 +402,10 @@ bool mqtt_manager_take_config_update(mqtt_config_update_t *update)
     return true;
 }
 static void co2_check_ack(const mqtt_config_update_t *update, const sensor_status_t *status);
+void test_config_committed(const mqtt_config_update_t *u);
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
+    test_config_committed(update);
     // In particular, the dispatcher must NEVER ACK a forwarded GY-511 update.
     assert(task_index() == (update->sensor == SENSOR_GY511 ? 1 : update->sensor == SENSOR_RC522 ? 2 : update->sensor == SENSOR_LD2450 ? 3 : update->sensor == SENSOR_HCSR04P ? 4 : update->sensor == SENSOR_MHZ1911A ? 5 : update->sensor == SENSOR_BME280 ? 6 : update->sensor == SENSOR_MAX6675 ? 7 : 0));
     if (update->sensor == SENSOR_LD2450) {
@@ -506,6 +509,8 @@ static void verify_commands(void)
             while (cursor < ack_count && acks[cursor].update.sensor != (sensor_id_t)sensor) cursor++;
             assert(cursor < ack_count);
             const ack_t *ack = &acks[cursor++];
+            assert(ack->update.request_id == in->update.request_id);
+            assert(ack->update.has_target_boot_id && ack->update.target_boot_id == in->update.target_boot_id);
             assert(ack->update.operation == in->update.operation);
             if (in->update.operation == MQTT_CONFIG_INTERVAL) assert(ack->update.interval_ms == in->update.interval_ms);
             else assert(ack->update.enabled == in->update.enabled);
@@ -534,6 +539,9 @@ static void simulate(void)
         test_now_us = next_us;
         while (next_input < input_count && base_us + inputs[next_input].at_us <= test_now_us) {
             assert(queued < 4); // Queue-full validation is covered by the actual MQTT tests.
+            inputs[next_input].update.request_id = UINT64_C(0xf123456700000001) + next_input;
+            inputs[next_input].update.has_target_boot_id = true;
+            inputs[next_input].update.target_boot_id = UINT32_C(0xfedcba98);
             queue[queued++] = inputs[next_input++].update;
         }
         const int priority_order[] = {1, 2, 3, 4, 5, 6, 7, 0};
@@ -645,7 +653,7 @@ static void test_gates(const char *scenario)
         assert(gy_count == 44 && gy_times[23] == 122100000 && gy_times[43] == 124100000);
         assert(diagnostics_paused > 1100 && test_log_calls >= 6);
     } else if (burst) {
-        if (!preempt_on_notify) assert(notify_busy > 0);
+        if (!preempt_on_notify) assert(notify_busy + test_config_sidecar_busy > 0);
         for (int sensor = SENSOR_DHT22; sensor <= SENSOR_GY511; ++sensor) {
             const ack_t *last_enable = NULL;
             for (unsigned i = 0; i < ack_count; ++i) {
@@ -818,7 +826,7 @@ static void test_rc522_config(const char *scenario)
             assert(acks[1].at_us == 2600000 && rc_times[12] == 2600000);
             for (unsigned i = 13; i < rc_count; ++i) assert(rc_times[i] - rc_times[i - 1] == 200000);
         } else if (burst) {
-            if (!preempt_on_notify) assert(notify_busy > 0);
+            if (!preempt_on_notify) assert(notify_busy + test_config_sidecar_busy > 0);
             const ack_t *last = &acks[ack_count - 1];
             assert(last->update.interval_ms == 500 && rc_count > last->read_count + 1);
             for (unsigned i = last->read_count + 1; i < rc_count; ++i) assert(rc_times[i] - rc_times[i - 1] == 500000);
@@ -959,7 +967,7 @@ static void test_radar_config(const char *scenario)
             assert(radar_interval_ms == (interval || burst ? 10000U : radar_first_delay_us ? 500U : 2000U));
             assert(radar_discards == (interval || radar_first_delay_us ? 0U : 1U));
         }
-        if (burst) assert(notify_busy > 0);
+        if (burst) assert(notify_busy + test_config_sidecar_busy > 0);
         for (unsigned i = 0; i < ack_count; ++i) {
             if (acks[i].update.sensor == SENSOR_LD2450 && acks[i].applied) {
                 // Read begins at N*110 ms; commit is between batches, never
@@ -1160,7 +1168,7 @@ int main(int argc, char **argv)
             for (unsigned i = 23; i < gy_count; ++i) assert(gy_times[i] == 100000 + i * 100000LL);
         }
     }
-    if (burst) assert(notify_busy > 0);
+    if (burst) assert(notify_busy + test_config_sidecar_busy > 0);
     if (shorten) assert(acks[1].at_us == 2600000); // Does not sleep for the old 10 s period.
     printf("PASS: interleaved readers/configuration scenario %s\n", scenario);
     return 0;

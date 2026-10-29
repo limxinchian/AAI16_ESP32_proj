@@ -36,7 +36,7 @@ for name in ["test_status", "test_logging", "test_app", "test_gy511", "test_bme2
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(test / "platform.c")]
     if name in ("test_app", "test_runtime"):
-        sources += [str(test / "motion_stub.c")]
+        sources += [str(test / "motion_stub.c"), str(test / "config_stub.c")]
     if name not in ("test_gy511", "test_bme280", "test_max6675"):
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     threading_flags = ["-pthread"] if name == "test_runtime" else []

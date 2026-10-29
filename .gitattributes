@@ -1,2 +1,12 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Phase 4A hashes cover exact bytes, including line endings.
+/models/motion_model_b/** -text
+/models/motion_model_b_evaluation_01/** -text
+/models/motion_model_comparison_01/** -text
+/tools/ml_training/train.py -text
+/tools/ml_training/compare_models.py -text
+/tests/motion_host/CMakeLists.txt -text
+/tests/motion_host/model_file_runner.cc -text
+/tests/motion_host/provenance/phase4a_CMakeLists.txt -text

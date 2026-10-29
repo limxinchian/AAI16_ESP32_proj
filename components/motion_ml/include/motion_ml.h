@@ -16,6 +16,7 @@ void motion_ml_configure(uint32_t interval_ms, uint32_t generation, bool enabled
 // Reader task marks available on entry. Until then, initialization/task failure
 // is reported as sensor_unavailable, independent of the configured interval.
 void motion_ml_set_sensor_available(bool available);
+bool motion_ml_model_ready(void);
 #ifdef __cplusplus
 }
 #endif

@@ -1,0 +1,7 @@
+{
+  "name": "aai16-mqttx-compatibility-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Test only: match MQTTX 1.13.1 protobufjs serialization",
+  "devDependencies": { "protobufjs": "7.5.4" }
+}

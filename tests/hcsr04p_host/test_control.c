@@ -27,6 +27,11 @@ unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task) { return 2000; }
 static void notify_control(uint32_t control)
 {
     assert(!notification_pending);
+    mqtt_config_update_t u = {.sensor = SENSOR_HCSR04P};
+    u.operation = control & CONFIG_ENABLED_FLAG ? MQTT_CONFIG_ENABLED : MQTT_CONFIG_INTERVAL;
+    if (u.operation == MQTT_CONFIG_ENABLED) u.enabled = (control & 1) != 0;
+    else u.interval_ms = control;
+    assert(mqtt_manager_stage_owner_config(&u));
     notification_pending = true; notification = control;
 }
 static void disable_during_echo(void)

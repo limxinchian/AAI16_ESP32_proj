@@ -40,14 +40,8 @@ static void rc522_reader_task(void *arg)
             if (!pending_update &&
                 xTaskNotifyWait(0, UINT32_MAX, &control, 0) != pdTRUE) break;
             pending_update = false;
-            mqtt_config_update_t update = {.sensor = SENSOR_RC522};
-            if (control & CONFIG_ENABLED_FLAG) {
-                update.operation = MQTT_CONFIG_ENABLED;
-                update.enabled = (control & 1) != 0;
-            } else {
-                update.operation = MQTT_CONFIG_INTERVAL;
-                update.interval_ms = control;
-            }
+            mqtt_config_update_t update;
+            if (!mqtt_manager_take_owner_config(SENSOR_RC522, &update)) continue;
             sensor_status_t status;
             if (!config_can_apply(&update, &status)) continue;
             if (update.operation == MQTT_CONFIG_ENABLED) {

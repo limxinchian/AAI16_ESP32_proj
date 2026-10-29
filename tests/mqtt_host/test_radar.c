@@ -170,7 +170,7 @@ static void test_radar_telemetry(void)
 
     // Full shared queue: radar neither takes a slot nor drops ACKs/events.
     radar_due();
-    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor=SENSOR_DHT22, .interval_ms=5000}) == ESP_OK);
+    assert(queue_test_ack() == ESP_OK);
     for (unsigned i = 1; i < TX_QUEUE_SIZE; ++i) assert(mqtt_manager_publish_dht22(25, 50) == ESP_OK);
     assert(mqtt_manager_update_ld2450_snapshot(&expected, clock_us) == ESP_OK);
     uint32_t deferrals = s_radar_deferred, radar_ok = stats->publish_ok;
@@ -247,58 +247,6 @@ static void radar_gate_during_sdk(void) { publish_hook = NULL; radar_gate(false)
 
 static void test_radar_config(void)
 {
-    // All commands share the actual parser/FIFO/ACK serializer; parsing alone
-    // must not commit a setting or claim application by the UART owner.
-    const unsigned valid[] = {500, 501, 1000, 2000, 10000};
-    for (unsigned i = 0; i < sizeof(valid)/sizeof(valid[0]); ++i) {
-        char payload[96]; mqtt_config_update_t update;
-        uint32_t attempts = s_stats[TX_CONFIG_ACK].attempts;
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"ld2450\",\"interval_ms\":%u}", valid[i]);
-        json_command(payload);
-        assert(s_stats[TX_CONFIG_ACK].attempts == attempts && s_radar_interval_ms == 1000);
-        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_LD2450);
-        assert(update.operation == MQTT_CONFIG_INTERVAL && update.interval_ms == valid[i]);
-        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"ld2450\",\"status\":\"applied\",\"interval_ms\":%u}", valid[i]);
-        assert(last_qos == 1 && !strcmp(last_payload, payload));
-    }
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":499}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":10001}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":500.5}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":-1}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":1e999}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":\"500\"}", "missing_or_invalid_interval_ms");
-    const char *invalid_booleans[] = {"0", "1", "null", "\"true\"", "[]", "{}"};
-    for (unsigned i = 0; i < sizeof(invalid_booleans)/sizeof(invalid_booleans[0]); ++i) {
-        char payload[96];
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"ld2450\",\"enabled\":%s}", invalid_booleans[i]);
-        rejected(payload, "enabled must be a boolean");
-    }
-    rejected("{\"sensor\":\"ld2450\",\"enabled\":false,\"interval_ms\":500}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"ld2450\",\"enabled\":false,\"enabled\":true}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":500,\"interval_ms\":1000}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"ld2450\",\"calibrate\":true}", "missing_configuration_operation");
-    const char *held = "{\"sensor\":\"ld2450\",\"enabled\":false}";
-    uint32_t attempts = s_stats[TX_CONFIG_ACK].attempts;
-    command(held, strlen(held), strlen(held), 0, true);
-    command(held, strlen(held), strlen(held), 1, false);
-    assert(!uxQueueMessagesWaiting(s_config_queue) && s_stats[TX_CONFIG_ACK].attempts == attempts);
-
-    const char *mixed[] = {
-        "{\"sensor\":\"ld2450\",\"enabled\":false}", "{\"sensor\":\"ld2450\",\"interval_ms\":2000}",
-        "{\"sensor\":\"ld2450\",\"enabled\":true}", "{\"sensor\":\"ld2450\",\"interval_ms\":500}"
-    };
-    for (unsigned i = 0; i < 4; ++i) json_command(mixed[i]);
-    json_command(mixed[0]); pump(); assert(strstr(last_payload, "queue_full"));
-    for (unsigned i = 0; i < 4; ++i) {
-        mqtt_config_update_t update;
-        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_LD2450);
-        assert(update.operation == (i % 2 ? MQTT_CONFIG_INTERVAL : MQTT_CONFIG_ENABLED));
-        if (i % 2) assert(update.interval_ms == (i == 1 ? 2000U : 500U));
-        else assert(update.enabled == (i == 2));
-    }
-    puts("PASS: LD2450 generic configuration parsing, limits, Booleans, ordered FIFO, ACK JSON and retained policy");
-
     assert(s_radar_enabled && s_radar_interval_ms == 1000);
     assert(mqtt_manager_commit_ld2450_config(NULL) == ESP_ERR_INVALID_ARG);
     assert(mqtt_manager_commit_ld2450_config(&(mqtt_config_update_t){.sensor=SENSOR_RC522, .interval_ms=500}) == ESP_ERR_INVALID_ARG);

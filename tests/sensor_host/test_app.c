@@ -141,8 +141,10 @@ bool mqtt_manager_take_config_update(mqtt_config_update_t *update)
     if (!mqtt_manager_peek_config_update(update)) return false;
     commands_taken++; return true;
 }
+void test_config_committed(const mqtt_config_update_t *u);
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
+    test_config_committed(update);
     assert(update->sensor == SENSOR_DHT22 && update->operation == MQTT_CONFIG_INTERVAL);
     applied_acks++; ack_interval = update->interval_ms; return ESP_OK;
 }

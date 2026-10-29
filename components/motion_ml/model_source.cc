@@ -1,20 +1,45 @@
 #include "motion_engine.h"
 #include "motion_core.h"
 #include "model_a_bundle.h"
+#include "model_b_bundle.h"
 #include <cstring>
 #include "tensorflow/lite/micro/micro_log.h"
 
 namespace motion {
-ModelView bundled_model()
+const ModelDescriptor *bundled_model(ModelFamily family)
 {
-    return {motion_bundle::model, sizeof(motion_bundle::model), motion_bundle::sha256,
-        motion_bundle::version, motion_bundle::input_scale, motion_bundle::output_scale,
-        motion_bundle::input_zero_point, motion_bundle::output_zero_point};
+    switch (family) {
+    case ModelFamily::A: return &motion_bundle_a::descriptor;
+    case ModelFamily::B: return &motion_bundle_b::descriptor;
+    default: return nullptr;
+    }
 }
-bool bundled_self_test(Engine &engine)
+const ModelDescriptor &startup_model()
 {
-    unsigned index = 0;
-    for (const auto &golden : motion_bundle::golden) {
+#if MOTION_BOOT_MODEL_B
+    return *bundled_model(ModelFamily::B);
+#else
+    return *bundled_model(ModelFamily::A);
+#endif
+}
+const char *model_family_name(ModelFamily family)
+{
+    switch (family) {
+    case ModelFamily::A: return "A";
+    case ModelFamily::B: return "B";
+    default: return "UNKNOWN";
+    }
+}
+bool model_self_test(Engine &engine, const ModelDescriptor &model, size_t &passed)
+{
+    passed = 0;
+    if (!engine.ready() || model.compatibility_profile != kMotionCompatibilityProfile ||
+        !model.golden || !model.golden_count || model.golden_count > 8 ||
+        engine.input_scale() != model.view.input_scale || engine.input_zero_point() != model.view.input_zero_point ||
+        engine.output_scale() != model.view.output_scale || engine.output_zero_point() != model.view.output_zero_point)
+        return false;
+    for (size_t index = 0; index < model.golden_count; ++index) {
+        const auto &golden = model.golden[index];
         float features[60], logits[2];
         int8_t input[60], output[2];
         uint32_t clipped;
@@ -23,11 +48,11 @@ bool bundled_self_test(Engine &engine)
             std::memcmp(input, golden.input, 60) || !engine.invoke(input, output) ||
             std::memcmp(output, golden.output, 2) ||
             motion_decode(output, engine.output_scale(), engine.output_zero_point(), logits) != golden.prediction) {
-            MicroPrintf("Model A golden vector %u failed (preprocessing, quantization, Invoke or output); runtime=%s",
-                index, engine.error());
+            MicroPrintf("Model %s golden vector %u failed (preprocessing, quantization, Invoke or output); runtime=%s",
+                model_family_name(model.family), (unsigned)index, engine.error());
             return false;
         }
-        ++index;
+        ++passed;
     }
     return true;
 }

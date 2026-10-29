@@ -1,0 +1,153 @@
+{
+  "evaluation_type": "training-set resubstitution sanity check only",
+  "independent_evaluation": "pending rest_orientation_02 and moving_directions_03",
+  "limitation": "one REST session; overlapping windows are not independent; no generalization or accuracy requirement claim",
+  "keras": {
+    "samples": 168,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        58,
+        0
+      ],
+      [
+        0,
+        110
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "per_class": {
+      "REST": {
+        "support": 58,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "MOVING": {
+        "support": 110,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "tflite_float32": {
+    "samples": 168,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        58,
+        0
+      ],
+      [
+        0,
+        110
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "per_class": {
+      "REST": {
+        "support": 58,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "MOVING": {
+        "support": 110,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "tflite_int8": {
+    "samples": 168,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        58,
+        0
+      ],
+      [
+        0,
+        110
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "per_class": {
+      "REST": {
+        "support": 58,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "MOVING": {
+        "support": 110,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "rms_baseline": {
+    "samples": 168,
+    "confusion_matrix_rows_true_columns_predicted": [
+      [
+        58,
+        0
+      ],
+      [
+        0,
+        110
+      ]
+    ],
+    "class_order": [
+      "REST",
+      "MOVING"
+    ],
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "per_class": {
+      "REST": {
+        "support": 58,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "MOVING": {
+        "support": 110,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "keras_vs_tflite_float32": {
+    "vectors": 168,
+    "prediction_agreement_count": 168,
+    "prediction_agreement_fraction": 1.0,
+    "logit_mean_absolute_error": 1.491890067145938e-07,
+    "logit_max_absolute_error": 9.5367431640625e-07,
+    "disagreement_vector_indices": []
+  },
+  "keras_vs_tflite_int8": {
+    "vectors": 168,
+    "prediction_agreement_count": 168,
+    "prediction_agreement_fraction": 1.0,
+    "logit_mean_absolute_error": 0.01632045198320633,
+    "logit_max_absolute_error": 0.06792116165161133,
+    "disagreement_vector_indices": []
+  }
+}

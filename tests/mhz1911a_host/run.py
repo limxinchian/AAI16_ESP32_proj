@@ -38,6 +38,8 @@ reader_cases = ["healthy", "warmup", "missing", "startup_recovery", "degraded", 
 for name, scenarios in [("test_driver", driver_cases), ("test_reader", reader_cases)]:
     binary = output / (name + suffix)
     sources = [str(test / (name + ".c")), str(repo / "tests/sensor_host/platform.c")]
+    if name in ("test_reader", "test_control"):
+        sources += [str(repo / "tests/sensor_host/config_stub.c")]
     if name == "test_driver":
         sources += [str(repo / "components/mhz1911a_sensor/mhz1911a_sensor.c"),
                     str(repo / "components/ld2450_sensor/ld2450_sensor.c"),

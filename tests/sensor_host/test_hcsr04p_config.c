@@ -118,7 +118,7 @@ static void test_hcsr04p_config(const char *scenario)
             assert(ultra_times[11] == 2200000);
             assert(acks[0].read_count == 12 && acks[0].at_us == 2240000);
         }
-        if (burst && !preempt_on_notify) assert(notify_busy > 0);
+        if (burst && !preempt_on_notify) assert(notify_busy + test_config_sidecar_busy > 0);
         if (intervals) assert(ultra_times[ultra_reads - 1] >= 16000000);
     }
     printf("PASS: HC-SR04P owner configuration, deadlines, gate/history and five-sensor isolation %s\n", scenario);

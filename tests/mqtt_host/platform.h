@@ -50,7 +50,7 @@ typedef struct {
     int error_type, esp_transport_sock_errno, connect_return_code;
 } fake_error_t;
 typedef struct {
-    int current_data_offset, topic_len, data_len, total_data_len;
+    int current_data_offset, topic_len, data_len, total_data_len, msg_id;
     char *topic, *data;
     bool retain;
     fake_error_t *error_handle;

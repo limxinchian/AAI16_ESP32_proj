@@ -2,16 +2,31 @@ cmake_minimum_required(VERSION 3.20)
 project(motion_host C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 11)
+set(MOTION_BOOT_MODEL "A" CACHE STRING "Startup model for provider tests (A or B)")
+if(NOT MOTION_BOOT_MODEL MATCHES "^(A|B)$")
+    message(FATAL_ERROR "MOTION_BOOT_MODEL must be A or B")
+endif()
 get_filename_component(repo "../.." ABSOLUTE)
 set(runtime "${repo}/managed_components/espressif__esp-tflite-micro")
 set(nn "${repo}/managed_components/espressif__esp-nn")
 set(lite "${runtime}/tensorflow/lite")
 set(micro "${lite}/micro")
 set(ml "${repo}/components/motion_ml")
+set(protocol "${repo}/components/aai16_protocol")
+include_directories("${protocol}/generated" "${protocol}/vendor/nanopb")
 set(mbed "${IDF_PATH}/components/mbedtls/mbedtls")
-execute_process(COMMAND "${PYTHON}" "${repo}/tools/ml_inference/generate_bundle.py"
-    --model-dir "${repo}/models/motion_model_a" --output "${CMAKE_CURRENT_BINARY_DIR}/model_a_bundle.h"
-    COMMAND_ERROR_IS_FATAL ANY)
+foreach(family a b)
+    execute_process(COMMAND "${PYTHON}" "${repo}/tools/ml_inference/generate_bundle.py"
+        --model-dir "${repo}/models/motion_model_${family}" --model ${family}
+        --output "${CMAKE_CURRENT_BINARY_DIR}/model_${family}_bundle.h" COMMAND_ERROR_IS_FATAL ANY)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${repo}/models/motion_model_${family}/manifest.json"
+        "${repo}/models/motion_model_${family}/model_int8.tflite"
+        "${repo}/models/motion_model_${family}/input_contract.json"
+        "${repo}/models/motion_model_${family}/quantization.json"
+        "${repo}/models/motion_model_${family}/golden_vectors.json")
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${repo}/tools/ml_inference/generate_bundle.py")
 include_directories("${runtime}" "${runtime}/third_party/gemmlowp"
     "${runtime}/third_party/flatbuffers/include" "${runtime}/third_party/ruy"
     "${ml}" "${ml}/include" "${CMAKE_CURRENT_SOURCE_DIR}/platform"
@@ -41,23 +56,77 @@ list(APPEND runtime_sources
     "${runtime}/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
     "${runtime}/tensorflow/compiler/mlir/lite/schema/schema_utils.cc"
     "${mbed}/library/sha256.c" "${mbed}/library/platform_util.c" "${mbed}/library/platform.c"
-    "${ml}/motion_core.c" "${ml}/motion_engine.cc" "${ml}/model_source.cc")
+    "${ml}/motion_core.c" "${ml}/motion_engine.cc" "${ml}/model_source.cc"
+    "${ml}/motion_candidate.cc" "${ml}/motion_runtime.cc" "${ml}/model_runtime.cc")
 add_library(host_runtime STATIC ${runtime_sources})
+target_compile_definitions(host_runtime PUBLIC MOTION_BOOT_MODEL_B=$<STREQUAL:${MOTION_BOOT_MODEL},B>)
 foreach(backend reference esp_nn_ansi)
-    add_executable(test_${backend} test_engine.cc "${micro}/kernels/esp_nn/fully_connected.cc")
+    add_executable(test_${backend} test_engine.cc "${micro}/kernels/esp_nn/fully_connected.cc" "${ml}/motion_backend.c")
     if(backend STREQUAL "esp_nn_ansi")
         target_compile_definitions(test_${backend} PRIVATE ESP_NN=1)
         target_sources(test_${backend} PRIVATE "${nn}/src/fully_connected/esp_nn_fully_connected_ansi.c")
     endif()
     target_link_libraries(test_${backend} PRIVATE host_runtime)
     target_link_options(test_${backend} PRIVATE -Wl,--gc-sections)
+    add_executable(model_${backend} model_file_runner.cc "${micro}/kernels/esp_nn/fully_connected.cc" "${ml}/motion_backend.c")
+    if(backend STREQUAL "esp_nn_ansi")
+        target_compile_definitions(model_${backend} PRIVATE ESP_NN=1)
+        target_sources(model_${backend} PRIVATE "${nn}/src/fully_connected/esp_nn_fully_connected_ansi.c")
+    endif()
+    target_link_libraries(model_${backend} PRIVATE host_runtime)
+    target_link_options(model_${backend} PRIVATE -Wl,--gc-sections)
 endforeach()
 add_executable(test_core test_core.c "${ml}/motion_core.c")
 add_library(core_python SHARED "${ml}/motion_core.c")
 set_target_properties(core_python PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 file(READ "${ml}/motion_ml.cc" worker_source)
-string(REPLACE "#include \"motion_engine.h\"" "#include \"fake_engine.h\"" worker_source "${worker_source}")
+string(REPLACE "#include \"model_runtime.h\"" "#include \"model_runtime_under_test.h\"" worker_source "${worker_source}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/motion_worker_under_test.cc" "${worker_source}")
+file(READ "${ml}/model_runtime.h" runtime_header)
+string(REPLACE "#include \"motion_engine.h\"" "#include \"fake_engine.h\"" runtime_header "${runtime_header}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/model_runtime_under_test.h" "${runtime_header}")
+file(READ "${ml}/model_runtime.cc" runtime_source)
+string(REPLACE "#include \"model_runtime.h\"" "#include \"model_runtime_under_test.h\"" runtime_source "${runtime_source}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/model_runtime_under_test.cc" "${runtime_source}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ml}/model_runtime.h" "${ml}/model_runtime.cc")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ml}/motion_ml.cc")
-add_executable(test_worker test_worker.cc "${ml}/motion_core.c")
+add_executable(test_worker test_worker.cc "${ml}/motion_core.c" "${ml}/motion_runtime.cc" "${ml}/motion_backend.c")
 target_include_directories(test_worker BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/worker_platform")
+add_executable(test_worker_b test_worker.cc "${ml}/motion_core.c" "${ml}/motion_runtime.cc" "${ml}/motion_backend.c")
+target_compile_definitions(test_worker_b PRIVATE MOTION_BOOT_MODEL_B=1)
+target_include_directories(test_worker_b BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/worker_platform")
+
+# Phase 5A exercises the real portable store, protobuf admission, candidate graph
+# validation and production engine against an in-memory NOR flash double.
+set(upload "${repo}/components/model_upload")
+foreach(target test_upload test_upload_ansi)
+    add_executable(${target} "${repo}/tests/model_upload_host/test_store.cc"
+        "${upload}/upload_store.cc" "${protocol}/aai16_protocol.c"
+        "${protocol}/generated/aai16.pb.c" "${protocol}/vendor/nanopb/pb_common.c"
+        "${protocol}/vendor/nanopb/pb_encode.c" "${protocol}/vendor/nanopb/pb_decode.c"
+        "${micro}/kernels/esp_nn/fully_connected.cc" "${ml}/motion_backend.c")
+    target_include_directories(${target} PRIVATE "${upload}" "${protocol}/include"
+        "${protocol}/generated" "${protocol}/vendor/nanopb")
+    target_compile_definitions(${target} PRIVATE PB_VALIDATE_UTF8=1 PB_MESSAGE_NESTING_MAX=8)
+    target_link_libraries(${target} PRIVATE host_runtime)
+    if(target STREQUAL "test_upload_ansi")
+        target_compile_definitions(${target} PRIVATE ESP_NN=1 CONFIG_NN_ANSI_C=1 TEST_EXPECTED_BACKEND=2)
+        target_sources(${target} PRIVATE "${nn}/src/fully_connected/esp_nn_fully_connected_ansi.c")
+    else()
+        target_compile_definitions(${target} PRIVATE TEST_EXPECTED_BACKEND=1)
+    endif()
+endforeach()
+
+# Exercise the reporter with the kernel's actual compile-time selectors. The
+# optimized case tests reporting only; it does not run S3 assembly on a PC.
+enable_testing()
+function(backend_test name expected)
+    add_executable(backend_${name} test_backend.c "${ml}/motion_backend.c")
+    target_compile_definitions(backend_${name} PRIVATE TEST_EXPECTED_BACKEND=${expected} ${ARGN})
+    add_test(NAME backend_${name} COMMAND backend_${name})
+endfunction()
+backend_test(reference 1)
+backend_test(reference_explicit 1 ESP_NN=0 CONFIG_NN_OPTIMIZED=1)
+backend_test(ansi 2 ESP_NN=1 CONFIG_NN_ANSI_C=1)
+backend_test(ansi_host 2 ESP_NN=1)
+backend_test(optimized 3 ESP_NN=1 CONFIG_NN_OPTIMIZED=1 CONFIG_IDF_TARGET_ESP32S3=1)

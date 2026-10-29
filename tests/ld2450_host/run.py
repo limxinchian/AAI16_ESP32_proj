@@ -26,6 +26,8 @@ for component in ["ld2450_sensor", "sensor_status", "mqtt_manager", "hcsr04p_sen
 for name in ["test_parser", "test_driver", "test_reader"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(repo / "tests/sensor_host/platform.c")]
+    if name in ("test_reader", "test_control"):
+        sources += [str(repo / "tests/sensor_host/config_stub.c")]
     sources += [str(repo / "components/ld2450_sensor/ld2450_parser.c")]
     if name == "test_reader":
         sources += [str(repo / "components/sensor_status/sensor_status.c")]

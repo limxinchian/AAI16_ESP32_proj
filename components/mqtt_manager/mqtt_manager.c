@@ -1,6 +1,7 @@
 
 #include "mqtt_manager.h"
 #include "motion_core.h"
+#include "motion_backend.h"
 #include "mhz1911a_sensor.h"
 #include "mqtt_credentials.h"
 
@@ -18,7 +19,8 @@
 #include "esp_random.h"
 #include "esp_system.h"
 
-#include "cJSON.h"
+#include "config_transactions.h"
+#include "model_upload.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -43,6 +45,10 @@
 #define MQTT_CONNECTED_BIT BIT0
 #define TX_QUEUE_SIZE 8
 #define TX_PAYLOAD_SIZE 320
+// ML uses protocol_version=1, boot_id, generation, and the ml_prediction body.
+// Include both the two-byte body tag and its bounded two-byte length prefix.
+_Static_assert(2 + 5 + 5 + 2 + 2 + aai16_MlPrediction_size < TX_PAYLOAD_SIZE,
+               "ML envelope exceeds telemetry queue capacity");
 #define TELEMETRY_MAX_AGE_MS 2000
 // Three targets need more than the shared 320-byte queue payload. Keep that
 // queue unchanged: serialize a single radar mailbox only in the publisher.
@@ -105,14 +111,6 @@ static const config_rule_t *config_rule_for_id(sensor_id_t id)
     return NULL;
 }
 
-static const config_rule_t *config_rule_for_name(const char *name)
-{
-    for (unsigned i = 0; i < sizeof(s_config_rules) / sizeof(s_config_rules[0]); ++i) {
-        if (strcmp(s_config_rules[i].name, name) == 0) return &s_config_rules[i];
-    }
-    return NULL;
-}
-
 static const char *TAG = "AAI16_MQTT";
 
 static esp_mqtt_client_handle_t s_client = NULL;
@@ -122,6 +120,10 @@ static EventGroupHandle_t s_mqtt_events = NULL;
 static QueueHandle_t s_tx_queue = NULL;
 static QueueHandle_t s_event_queue = NULL;
 static uint32_t s_boot_id;
+static portMUX_TYPE s_config_lock = portMUX_INITIALIZER_UNLOCKED;
+static config_transactions_t s_transactions;
+static config_fragments_t s_fragments;
+static uint32_t s_config_decode_rejected;
 static TaskHandle_t s_tx_task;
 
 typedef enum {
@@ -707,6 +709,45 @@ static void service_mhz1911a_snapshot(void)
     }
 }
 
+// Separate bounded mailbox keeps model traffic out of the sensor/config FIFO.
+typedef struct { bool status; size_t length; uint8_t data[AAI16_FRAME_MAX]; } model_reply_t;
+static model_reply_t s_model_replies[4];
+static unsigned s_model_reply_head, s_model_reply_count;
+static bool queue_model_reply(bool status, const uint8_t *data, size_t length)
+{
+    if (!data || !length || length > AAI16_FRAME_MAX) return false;
+    portENTER_CRITICAL(&s_stats_lock);
+    bool accepted = s_model_reply_count < 4;
+    if (accepted) {
+        model_reply_t *slot = &s_model_replies[(s_model_reply_head + s_model_reply_count) % 4];
+        slot->status = status; slot->length = length;
+        memcpy(slot->data, data, length);
+        ++s_model_reply_count;
+    }
+    portEXIT_CRITICAL(&s_stats_lock);
+    return accepted;
+}
+static void service_model_replies(void)
+{
+    if (!mqtt_connected()) return;
+    model_reply_t reply;
+    portENTER_CRITICAL(&s_stats_lock);
+    bool pending = s_model_reply_count != 0;
+    if (pending) reply = s_model_replies[s_model_reply_head];
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (!pending) return;
+    // Share the existing 1 KiB event allowance, preserving config ACK reserve.
+    int used = esp_mqtt_client_get_outbox_size(s_client);
+    if (used < 0 || (size_t)used + reply.length + 64 > EVENT_OUTBOX_BUDGET_BYTES) return;
+    int id = esp_mqtt_client_enqueue(s_client, reply.status ? MODEL_STATUS_TOPIC : MODEL_ACK_TOPIC,
+        (const char *)reply.data, reply.length, 1, 0, true);
+    if (id < 0) return;
+    portENTER_CRITICAL(&s_stats_lock);
+    s_model_reply_head = (s_model_reply_head + 1) % 4;
+    --s_model_reply_count;
+    portEXIT_CRITICAL(&s_stats_lock);
+}
+
 static TickType_t publisher_wait_ticks(void)
 {
     int64_t now = esp_timer_get_time();
@@ -740,6 +781,7 @@ static void mqtt_tx_task(void *arg)
         service_mhz1911a_snapshot();
         if (xQueueReceive(s_tx_queue, &message, publisher_wait_ticks()) != pdTRUE) {
             update_outbox_snapshot();
+            service_model_replies();
             service_event_queue();
             continue;
         }
@@ -791,6 +833,7 @@ static void mqtt_tx_task(void *arg)
             next_failure_log_us = esp_timer_get_time() + 10000000LL;
         }
         update_outbox_snapshot();
+        service_model_replies();
         service_event_queue();
     }
 }
@@ -850,6 +893,16 @@ void mqtt_manager_log_diagnostics(void)
     mhz1911a_pending = s_mhz1911a.pending;
     mhz1911a_enabled = s_mhz1911a_enabled;
     portEXIT_CRITICAL(&s_stats_lock);
+    uint32_t config_invalid, fragment_invalid, fragment_expired;
+    uint64_t config_high_water;
+    portENTER_CRITICAL(&s_config_lock);
+    config_invalid = s_config_decode_rejected;
+    fragment_invalid = s_fragments.rejected; fragment_expired = s_fragments.expired;
+    config_high_water = s_transactions.high_water_request;
+    portEXIT_CRITICAL(&s_config_lock);
+    ESP_LOGI(TAG, "  protobuf_config_invalid=%" PRIu32 " fragment_invalid=%" PRIu32
+             " fragment_expired=%" PRIu32 " request_high_water=%" PRIu64,
+             config_invalid, fragment_invalid, fragment_expired, config_high_water);
     ESP_LOGI(TAG, "MQTT summary | boot=%08" PRIx32 " uptime_ms=%" PRId64
              " connected=%d tx_pending=%u",
              s_boot_id, now_ms, mqtt_connected(),
@@ -900,58 +953,121 @@ void mqtt_manager_log_diagnostics(void)
 // Send rejected configuration ACK
 // --------------------------------------------------
 
-static esp_err_t mqtt_send_rejected_ack(const char *sensor, const char *reason,
-                                       const double *interval, const bool *enabled)
+#define CR(x) aai16_ResultCode_RESULT_##x
+#define CP(x) aai16_Phase_PHASE_##x
+// Full ACK bound: 36-byte conservative envelope overhead + 98-byte ConfigAck.
+_Static_assert(36 + aai16_ConfigAck_size < TX_PAYLOAD_SIZE, "ACK exceeds existing TX slot");
+
+static esp_err_t publish_receipt(const config_receipt_t *r)
 {
-    if (reason == NULL) {
-        return ESP_ERR_INVALID_ARG;
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_request_id = e.has_boot_id = e.has_generation = e.has_phase = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.request_id = r->update.request_id; e.boot_id = s_boot_id;
+    e.generation = r->generation; e.phase = r->phase;
+    e.which_body = aai16_Envelope_config_ack_tag;
+    aai16_ConfigAck *ack = &e.body.config_ack;
+    ack->has_result = true; ack->result = r->result;
+    ack->sensor = config_sensor_to_wire(r->update.sensor);
+    ack->has_sensor = ack->sensor != aai16_SensorId_SENSOR_UNSPECIFIED;
+    if (ack->has_sensor) {
+        ack->has_requested = true;
+        config_requested(&r->update, &ack->requested);
     }
     begin_attempt(TX_CONFIG_ACK);
-    // Escape untrusted sensor IDs (including unsupported names). Malformed JSON
-    // has no trustworthy target, so report JSON null rather than inventing one.
-    char sensor_json[262] = "null", reason_json[128], interval_json[64] = "";
-    char enabled_json[24] = "";
-    cJSON sensor_value = {.type = cJSON_String, .valuestring = (char *)sensor};
-    cJSON reason_value = {.type = cJSON_String, .valuestring = (char *)reason};
-    if ((sensor != NULL && !cJSON_PrintPreallocated(&sensor_value, sensor_json,
-                                                   sizeof(sensor_json), false)) ||
-        !cJSON_PrintPreallocated(&reason_value, reason_json, sizeof(reason_json), false)) {
-        count_event(&s_stats[TX_CONFIG_ACK].invalid);
-        return ESP_ERR_INVALID_SIZE;
-    }
-    if (interval != NULL && isfinite(*interval)) {
-        snprintf(interval_json, sizeof(interval_json), ",\"interval_ms\":%.17g", *interval);
-    }
-    if (enabled != NULL) {
-        snprintf(enabled_json, sizeof(enabled_json), ",\"enabled\":%s", *enabled ? "true" : "false");
-    }
     tx_message_t message = {.kind = TX_CONFIG_ACK};
-    message.len = snprintf(
-        message.payload,
-        sizeof(message.payload),
-        "{\"sensor\":%s,"
-        "\"status\":\"rejected\","
-        "\"reason\":%s%s%s}",
-        sensor_json, reason_json, interval_json, enabled_json
-    );
-
-    // Failures are counted and reported by the rate-limited diagnostics.
+    size_t length = 0;
+    if (aai16_protocol_encode(&e, (uint8_t *)message.payload, sizeof(message.payload), &length) != CR(OK)) {
+        count_event(&s_stats[TX_CONFIG_ACK].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    message.len = (int)length; // Binary: never strlen(), including explicit false.
     return queue_message(&message);
 }
 
-esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update,
-                                   const char *reason)
+static esp_err_t finish_config(const mqtt_config_update_t *update, aai16_ResultCode result)
 {
-    if (update == NULL || (update->operation != MQTT_CONFIG_INTERVAL &&
-                           update->operation != MQTT_CONFIG_ENABLED)) return ESP_ERR_INVALID_ARG;
-    const config_rule_t *rule = config_rule_for_id(update->sensor);
-    if (rule == NULL) return ESP_ERR_INVALID_ARG;
-    double interval = update->operation == MQTT_CONFIG_INTERVAL ? update->interval_ms : 0;
-    return mqtt_send_rejected_ack(rule->name, reason,
-        update->operation == MQTT_CONFIG_INTERVAL ? &interval : NULL,
-        update->operation == MQTT_CONFIG_ENABLED ? &update->enabled : NULL);
+    if (!update) return ESP_ERR_INVALID_ARG;
+    config_receipt_t receipt;
+    portENTER_CRITICAL(&s_config_lock);
+    bool finished = config_finish(&s_transactions, update, result, &receipt);
+    portEXIT_CRITICAL(&s_config_lock);
+    // Cache is committed before queue admission. Retrying the same request
+    // recovers a dropped ACK without applying again or incrementing generation.
+    return finished ? publish_receipt(&receipt) : ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t mqtt_manager_reject_config(const mqtt_config_update_t *update, const char *reason)
+{
+    aai16_ResultCode result = CR(INTERNAL_ERROR);
+    if (!reason) return ESP_ERR_INVALID_ARG;
+    if (!strcmp(reason, "sensor_unavailable")) result = CR(SENSOR_UNAVAILABLE);
+    else if (!strcmp(reason, "sensor_disabled")) result = CR(SENSOR_DISABLED);
+    else if (!strcmp(reason, "unsupported_sensor")) result = CR(UNSUPPORTED_SENSOR);
+    else if (!strcmp(reason, "queue_full")) result = CR(QUEUE_FULL);
+    return finish_config(update, result);
+}
+
+bool mqtt_manager_stage_owner_config(const mqtt_config_update_t *update)
+{
+    if (!update) return false;
+    portENTER_CRITICAL(&s_config_lock);
+    bool ok = config_stage(&s_transactions, update);
+    portEXIT_CRITICAL(&s_config_lock);
+    return ok;
+}
+void mqtt_manager_cancel_owner_config(sensor_id_t sensor)
+{
+    if ((unsigned)sensor >= SENSOR_STATUS_CAPACITY) return;
+    portENTER_CRITICAL(&s_config_lock);
+    s_transactions.occupied[sensor] = false;
+    portEXIT_CRITICAL(&s_config_lock);
+}
+bool mqtt_manager_take_owner_config(sensor_id_t sensor, mqtt_config_update_t *out)
+{
+    if (!out) return false;
+    portENTER_CRITICAL(&s_config_lock);
+    bool ok = config_take(&s_transactions, sensor, out);
+    portEXIT_CRITICAL(&s_config_lock);
+    return ok;
+}
+bool mqtt_manager_begin_owner_config(mqtt_config_update_t *update)
+{
+    if (!update) return false;
+    config_receipt_t failure = {0};
+    portENTER_CRITICAL(&s_config_lock);
+    bool ok = config_begin(&s_transactions, update, &failure);
+    portEXIT_CRITICAL(&s_config_lock);
+    if (!ok && failure.update.request_id) (void)publish_receipt(&failure);
+    return ok;
+}
+
+static void receive_config(const uint8_t *data, size_t length)
+{
+    aai16_Envelope envelope;
+    uint64_t identity;
+    aai16_ResultCode result = aai16_config_decode(data, length, &envelope, &identity);
+    if (result != CR(OK)) {
+        portENTER_CRITICAL(&s_config_lock);
+        ++s_config_decode_rejected;
+        portEXIT_CRITICAL(&s_config_lock);
+        if (identity) {
+            config_receipt_t rejected = {.update = {.request_id = identity, .sensor = SENSOR_STATUS_CAPACITY},
+                .phase = CP(VALIDATE), .result = result};
+            (void)publish_receipt(&rejected);
+        }
+        return; // No trusted request ID: diagnostic drop, never invent an ACK ID.
+    }
+    mqtt_config_update_t update;
+    config_receipt_t reply;
+    portENTER_CRITICAL(&s_config_lock);
+    int admitted = config_admit(&s_transactions, &envelope, s_boot_id, &update, &reply);
+    portEXIT_CRITICAL(&s_config_lock);
+    if (admitted < 0) (void)publish_receipt(&reply);
+    if (admitted > 0 && (s_config_queue == NULL || xQueueSend(s_config_queue, &update, 0) != pdTRUE))
+        (void)mqtt_manager_reject_config(&update, "queue_full");
+    // No successful VALIDATE/queued ACK: only the sensor owner can report OK.
+}
 
 // --------------------------------------------------
 // MQTT event handler
@@ -984,6 +1100,9 @@ static void mqtt_event_handler(
             CONFIG_SET_TOPIC,
             1
         );
+        if (esp_mqtt_client_subscribe(s_client, MODEL_CONTROL_TOPIC, 1) < 0 ||
+            esp_mqtt_client_subscribe(s_client, MODEL_CHUNK_TOPIC, 1) < 0)
+            ESP_LOGE(TAG, "Model staging subscription failed");
 
         if (sub_id >= 0) {
             ESP_LOGI(
@@ -1016,216 +1135,22 @@ static void mqtt_event_handler(
     // ----------------------------------------------
 
     case MQTT_EVENT_DATA: {
-        esp_mqtt_event_handle_t event =
-            (esp_mqtt_event_handle_t)event_data;
-
-        // Ignore continuation fragments.
-        if (event->current_data_offset != 0) {
-            break;
-        }
-
-        // Only process configuration topic.
-        if (event->topic == NULL ||
-            event->topic_len !=
-                (int)strlen(CONFIG_SET_TOPIC) ||
-            memcmp(
-                event->topic,
-                CONFIG_SET_TOPIC,
-                event->topic_len
-            ) != 0) {
-            break;
-        }
-
-        // Ignore retained configuration commands.
-        if (event->retain) {
-            ESP_LOGW(
-                TAG,
-                "Retained configuration ignored."
-            );
-            break;
-        }
-
-        // Limit payload size to 256 bytes.
-        if (event->data == NULL ||
-            event->data_len <= 0 ||
-            event->data_len > 256 ||
-            event->data_len != event->total_data_len) {
-
-            ESP_LOGW(
-                TAG,
-                "Invalid configuration payload size."
-            );
-
-            mqtt_send_rejected_ack(
-                NULL, "invalid_payload_size_or_fragmented", NULL, NULL
-            );
-
-            break;
-        }
-
-        // Copy MQTT payload into a null-terminated
-        // string before parsing JSON.
-        char json_text[257];
-
-        memcpy(
-            json_text,
-            event->data,
-            (size_t)event->data_len
-        );
-
-        json_text[event->data_len] = '\0';
-
-        // Reject embedded null bytes.
-        if (memchr(
-                event->data,
-                '\0',
-                (size_t)event->data_len
-            ) != NULL) {
-
-            mqtt_send_rejected_ack(NULL, "invalid_json", NULL, NULL);
-            break;
-        }
-
-        // Parse the entire JSON message.
-        cJSON *root = cJSON_ParseWithOpts(
-            json_text,
-            NULL,
-            1
-        );
-
-        if (!cJSON_IsObject(root)) {
-            ESP_LOGW(TAG, "Invalid JSON received.");
-
-            mqtt_send_rejected_ack(NULL, "invalid_json", NULL, NULL);
-
-            cJSON_Delete(root);
-            break;
-        }
-
-        cJSON *sensor =
-            cJSON_GetObjectItemCaseSensitive(
-                root,
-                "sensor"
-            );
-
-        cJSON *interval =
-            cJSON_GetObjectItemCaseSensitive(
-                root,
-                "interval_ms"
-            );
-
-        cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
-        unsigned sensor_fields = 0, operation_fields = 0;
-        const cJSON *field;
-        cJSON_ArrayForEach(field, root) {
-            if (strcmp(field->string, "sensor") == 0) sensor_fields++;
-            if (strcmp(field->string, "interval_ms") == 0 ||
-                strcmp(field->string, "enabled") == 0) operation_fields++;
-        }
-
-        // ------------------------------------------
-        // Validate sensor field
-        // ------------------------------------------
-
-        if (sensor_fields != 1 || !cJSON_IsString(sensor) ||
-            sensor->valuestring == NULL) {
-
-            mqtt_send_rejected_ack(
-                NULL, "missing_or_invalid_sensor", NULL, NULL
-            );
-
-            cJSON_Delete(root);
-            break;
-        }
-
-        const config_rule_t *rule = config_rule_for_name(sensor->valuestring);
-        const double *requested_value = cJSON_IsNumber(interval) ? &interval->valuedouble : NULL;
-        bool requested_enabled = cJSON_IsTrue(enabled);
-        const bool *requested_gate = cJSON_IsBool(enabled) ? &requested_enabled : NULL;
-        if (rule == NULL) {
-
-            ESP_LOGW(TAG, "Unsupported sensor.");
-
-            mqtt_send_rejected_ack(
-                sensor->valuestring, "unsupported_sensor", requested_value, requested_gate
-            );
-
-            cJSON_Delete(root);
-            break;
-        }
-
-        // ------------------------------------------
-        // Exactly one operation, including rejecting duplicate operation keys.
-        // ------------------------------------------
-
-        if (operation_fields != 1) {
-            mqtt_send_rejected_ack(rule->name, operation_fields == 0 ?
-                "missing_configuration_operation" : "ambiguous_configuration",
-                requested_value, requested_gate);
-            cJSON_Delete(root);
-            break;
-        }
-
-        mqtt_config_update_t update = {.sensor = rule->id};
-        if (enabled != NULL) {
-            if (!cJSON_IsBool(enabled)) {
-                mqtt_send_rejected_ack(rule->name, "enabled must be a boolean", NULL, NULL);
-                cJSON_Delete(root);
-                break;
-            }
-            update.operation = MQTT_CONFIG_ENABLED;
-            update.enabled = requested_enabled;
-        } else {
-            if (!cJSON_IsNumber(interval)) {
-                mqtt_send_rejected_ack(rule->name, "missing_or_invalid_interval_ms", NULL, NULL);
-                cJSON_Delete(root);
-                break;
-            }
-            double value = interval->valuedouble;
-            // Check bounds before converting, including non-finite JSON numbers.
-            if (!(value >= rule->min_interval_ms && value <= rule->max_interval_ms) ||
-                value != (double)(uint32_t)value) {
-                char reason[96];
-                snprintf(reason, sizeof(reason), "interval_ms must be an integer from %lu to %lu",
-                         (unsigned long)rule->min_interval_ms, (unsigned long)rule->max_interval_ms);
-                mqtt_send_rejected_ack(rule->name, reason, &value, NULL);
-                cJSON_Delete(root);
-                break;
-            }
-            update.operation = MQTT_CONFIG_INTERVAL;
-            update.interval_ms = (uint32_t)value;
-        }
-
-        cJSON_Delete(root);
-
-        // ------------------------------------------
-        // Send valid configuration to sensor loop
-        // ------------------------------------------
-
-        if (s_config_queue == NULL ||
-            xQueueSend(
-                s_config_queue,
-                &update,
-                0
-            ) != pdTRUE) {
-
-            ESP_LOGW(
-                TAG,
-                "Configuration queue full."
-            );
-
-            mqtt_manager_reject_config(&update, "queue_full");
-            break;
-        }
-
-        if (update.operation == MQTT_CONFIG_ENABLED) {
-            ESP_LOGI(TAG, "%s configuration queued: enabled=%s",
-                     rule->name, update.enabled ? "true" : "false");
-        } else {
-            ESP_LOGI(TAG, "%s configuration queued: %lu ms",
-                     rule->name, (unsigned long)update.interval_ms);
-        }
-
+        esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+        if (!event) break;
+        model_upload_receive(event->topic, event->topic_len > 0 ? (size_t)event->topic_len : 0,
+            event->data, event->data_len, event->current_data_offset, event->total_data_len,
+            event->msg_id, event->retain);
+        bool matches = event->topic && event->topic_len == (int)strlen(CONFIG_SET_TOPIC) &&
+                       memcmp(event->topic, CONFIG_SET_TOPIC, strlen(CONFIG_SET_TOPIC)) == 0;
+        uint8_t completed[AAI16_CONFIG_FRAME_MAX];
+        int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&s_config_lock);
+        size_t length = config_fragment_feed(&s_fragments, now, matches,
+            event->topic != NULL && event->topic_len != 0, event->retain, event->msg_id,
+            event->current_data_offset, event->total_data_len, event->data, event->data_len);
+        if (length) memcpy(completed, s_fragments.data, length);
+        portEXIT_CRITICAL(&s_config_lock);
+        if (length) receive_config(completed, length);
         break;
     }
 
@@ -1234,6 +1159,11 @@ static void mqtt_event_handler(
     // ----------------------------------------------
 
     case MQTT_EVENT_DISCONNECTED:
+        model_upload_disconnected();
+        portENTER_CRITICAL(&s_config_lock);
+        if (s_fragments.active) ++s_fragments.rejected;
+        s_fragments.active = false;
+        portEXIT_CRITICAL(&s_config_lock);
         count_event(&s_disconnects);
         xEventGroupClearBits(
             s_mqtt_events,
@@ -1287,6 +1217,9 @@ esp_err_t mqtt_manager_init(void)
     }
     esp_err_t err = ESP_ERR_NO_MEM;
     s_boot_id = esp_random();
+    memset(&s_transactions, 0, sizeof(s_transactions));
+    memset(&s_fragments, 0, sizeof(s_fragments));
+    s_config_decode_rejected = 0;
     // Create configuration queue.
     s_config_queue = xQueueCreate(
         CONFIG_QUEUE_SIZE,
@@ -1370,6 +1303,8 @@ esp_err_t mqtt_manager_init(void)
         err = ESP_ERR_NO_MEM;
         goto fail;
     }
+    if (!model_upload_start(s_boot_id, queue_model_reply))
+        ESP_LOGE(TAG, "Model staging worker unavailable; inference/configuration continue");
     ESP_LOGI(TAG, "Publisher ready: boot=%08" PRIx32
              " tx_slots=%d outbox_limit=%d diagnostics_ms=%d;"
              " QoS0 publish success is not a broker receipt",
@@ -1467,6 +1402,11 @@ esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_lengt
 
 bool mqtt_manager_peek_config_update(mqtt_config_update_t *out)
 {
+    // app_main polls at ~100 ms even if no complete configuration is queued.
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_config_lock);
+    config_fragment_expire(&s_fragments, now);
+    portEXIT_CRITICAL(&s_config_lock);
     return s_config_queue != NULL && out != NULL &&
            xQueuePeek(s_config_queue, out, 0) == pdTRUE;
 }
@@ -1484,32 +1424,8 @@ bool mqtt_manager_take_config_update(mqtt_config_update_t *out)
 
 esp_err_t mqtt_manager_publish_config_ack(const mqtt_config_update_t *update)
 {
-    if (update == NULL) return ESP_ERR_INVALID_ARG;
-    const config_rule_t *rule = config_rule_for_id(update->sensor);
-    if (rule == NULL) return ESP_ERR_INVALID_ARG;
-    char value[64];
-    if (update->operation == MQTT_CONFIG_ENABLED) {
-        snprintf(value, sizeof(value), "\"enabled\":%s", update->enabled ? "true" : "false");
-    } else if (update->operation == MQTT_CONFIG_INTERVAL) {
-        snprintf(value, sizeof(value), "\"interval_ms\":%lu", (unsigned long)update->interval_ms);
-    } else {
-        return ESP_ERR_INVALID_ARG;
-    }
-    begin_attempt(TX_CONFIG_ACK);
-    tx_message_t message = {.kind = TX_CONFIG_ACK};
-    message.len = snprintf(
-        message.payload,
-        sizeof(message.payload),
-        "{\"sensor\":\"%s\","
-        "\"status\":\"applied\","
-        "%s}",
-        rule->name,
-        value
-    );
-
-    return queue_message(&message);
+    return finish_config(update, CR(OK));
 }
-
 
 esp_err_t mqtt_manager_publish_gy511(
     float accel_x_g,
@@ -1526,30 +1442,59 @@ esp_err_t mqtt_manager_publish_gy511(
 
 uint32_t mqtt_manager_boot_id(void) { return s_boot_id; }
 
+static aai16_ResultCode encode_motion(const motion_result_t *r, uint8_t *data,
+                                    size_t capacity, size_t *length)
+{
+    aai16_Envelope e=aai16_Envelope_init_zero;
+    e.has_protocol_version=e.has_boot_id=e.has_generation=true;
+    e.protocol_version=AAI16_PROTOCOL_VERSION; e.boot_id=r->boot_id; e.generation=r->generation;
+    e.which_body=aai16_Envelope_ml_prediction_tag;
+    aai16_MlPrediction *p=&e.body.ml_prediction;
+    p->has_model=p->has_model_epoch=p->has_status=p->has_model_ready=p->has_classification=p->has_interval_ms=p->has_uptime_us=true;
+    p->model_epoch=r->model_epoch; p->status=(aai16_MotionStatus)(r->status+1);
+    p->model_ready=r->model_ready; p->classification=aai16_MotionClass_CLASS_UNKNOWN;
+    p->interval_ms=r->interval_ms; p->uptime_us=r->uptime_us;
+    aai16_ModelIdentity *id=&p->model;
+    id->has_family=id->has_version=id->has_sha256=id->has_source=true;
+    id->family=(aai16_ModelFamily)r->model_identity.family; id->source=(aai16_ModelSource)r->model_identity.source;
+    id->has_bank=id->source==aai16_ModelSource_SOURCE_STORED; id->bank=r->model_identity.bank;
+    memcpy(id->version,r->model_identity.version,sizeof(id->version));
+    id->sha256.size=32; memcpy(id->sha256.bytes,r->model_identity.sha256,32);
+    p->has_backend=p->has_trial=true; p->backend=motion_inference_backend(); p->trial=false;
+    p->has_clipped_total=p->has_queue_drops=p->has_window_resets=p->has_invoke_failures=true;
+    p->clipped_total=r->clipped_total; p->queue_drops=r->queue_drops; p->window_resets=r->window_resets; p->invoke_failures=r->invoke_failures;
+    p->has_arena_reserved_bytes=p->has_arena_used_bytes=true;
+    p->arena_reserved_bytes=16384; p->arena_used_bytes=r->arena_used_bytes;
+    if(r->status==MOTION_PREDICTION) {
+        p->classification=r->class_id==0?aai16_MotionClass_CLASS_REST:aai16_MotionClass_CLASS_MOVING;
+        p->has_first_sequence=p->has_last_sequence=p->has_window_start_us=p->has_window_end_us=p->has_inference_us=p->has_output_int8=p->has_clipped=true;
+        p->first_sequence=r->first_sequence; p->last_sequence=r->last_sequence;
+        p->window_start_us=r->window_start_us; p->window_end_us=r->window_end_us; p->inference_us=r->inference_us;
+        p->output_int8.size=2; memcpy(p->output_int8.bytes,r->output_int8,2);
+        p->logits_count=2; memcpy(p->logits,r->logits,sizeof(r->logits)); p->clipped=r->clipped;
+    }
+    return aai16_protocol_encode(&e,data,capacity,length);
+}
+
 esp_err_t mqtt_manager_publish_motion(const motion_result_t *r)
 {
     (void)begin_attempt(TX_MOTION);
-    if (!r || !memchr(r->model_version, '\0', sizeof(r->model_version)) ||
-        !r->model_version[0] ||
-        strspn(r->model_version, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != strlen(r->model_version) ||
+    if (!r ||
         (unsigned)r->status > MOTION_SENSOR_UNAVAILABLE ||
         (r->status == MOTION_PREDICTION && (!r->model_ready || r->class_id < 0 || r->class_id > 1)) ||
-        r->uptime_us < 0 || r->uptime_us > esp_timer_get_time()) {
+        r->uptime_us < 0 || r->uptime_us > esp_timer_get_time() || r->arena_used_bytes > UINT32_MAX) {
         count_event(&s_stats[TX_MOTION].invalid);
         return ESP_ERR_INVALID_ARG;
     }
     tx_message_t message = {.kind = TX_MOTION, .created_ms = r->uptime_us / 1000};
-    const char *state = r->status == MOTION_PREDICTION ? (r->class_id == 0 ? "REST" : "MOVING") : "UNKNOWN";
-    // Bounded adapter only: engine/window structures do not contain JSON.
-    // Keep under the existing queue's payload limit; full diagnostics are serial.
-    message.len = snprintf(message.payload, sizeof(message.payload),
-        "{\"model\":\"%s\",\"state\":\"%s\",\"status\":\"%s\",\"ready\":%s,"
-        "\"boot_id\":\"%08" PRIx32 "\",\"first\":%" PRIu32 ",\"last\":%" PRIu32 ","
-        "\"generation\":%" PRIu32 ",\"period_ms\":%" PRIu32 ",\"uptime_ms\":%" PRId64 ","
-        "\"inference_us\":%" PRId64 ",\"clipped\":%" PRIu32 "}",
-        r->model_version, state, motion_status_name(r->status), r->model_ready ? "true" : "false",
-        r->boot_id, r->first_sequence, r->last_sequence, r->generation, r->interval_ms,
-        message.created_ms, r->inference_us, r->clipped);
+    // Fixed stack buffers and nanopb only. Identity/epoch are from this result,
+    // never a later runtime snapshot. The shared queue copies the encoded bytes.
+    size_t length = 0;
+    if (encode_motion(r, (uint8_t *)message.payload, sizeof(message.payload), &length) != CR(OK)) {
+        count_event(&s_stats[TX_MOTION].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    message.len = (int)length; // Binary payload: embedded NULs are not terminators.
     return queue_message(&message);
 }
 

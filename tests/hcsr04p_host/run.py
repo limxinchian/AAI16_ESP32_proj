@@ -28,6 +28,8 @@ for component in ["hcsr04p_sensor", "sensor_status", "mqtt_manager", "ld2450_sen
 for name in ["test_driver", "test_reader", "test_control"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(repo / "tests/sensor_host/platform.c")]
+    if name in ("test_reader", "test_control"):
+        sources += [str(repo / "tests/sensor_host/config_stub.c")]
     if name != "test_driver":
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     subprocess.run(flags + sources + ["-lm", "-o", str(binary)], check=True)

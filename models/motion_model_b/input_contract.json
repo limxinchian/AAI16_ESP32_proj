@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "sensor": "GY-511 accelerometer",
+  "raw_units": "g",
+  "sampling_hz": 10,
+  "window_samples": 20,
+  "axes": [
+    "x",
+    "y",
+    "z"
+  ],
+  "stride_samples": 10,
+  "float_input_shape": [
+    1,
+    60
+  ],
+  "float_dtype": "float32",
+  "class_mapping": {
+    "REST": 0,
+    "MOVING": 1
+  },
+  "preprocessing": [
+    "accumulate each axis chronologically in float32 over 20 samples",
+    "divide each sum by float32(20); subtract per-axis mean in float32",
+    "clamp centered acceleration to [-2, 2] g",
+    "divide by float32(2)",
+    "flatten sample-major: x0,y0,z0,x1,y1,z1,...,x19,y19,z19"
+  ],
+  "window_admission": "20 valid chronological rows; no >150 ms gap, reboot or sequence discontinuity",
+  "offline_stride": "starts at original session rows 0,10,20,...; invalid crossing windows discarded",
+  "int8_encoding": "q = clamp(round_ties_to_even(float32(x / input_scale)) + input_zero_point, -128, 127)",
+  "int8_decoding": "logit = float32(q - output_zero_point) * output_scale",
+  "output_shape": [
+    1,
+    2
+  ],
+  "output": "REST and MOVING logits, not probabilities",
+  "decision": "argmax(logits); exact ties select REST=0; monotonic scalar quantization permits INT8 argmax",
+  "scope": "flat stationary desk REST vs continuous hand movement/shaking MOVING"
+}

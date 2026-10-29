@@ -18,4 +18,5 @@ idf_component_register(
         bme280_sensor
         max6675_sensor
         motion_ml
+        aai16_protocol
 )

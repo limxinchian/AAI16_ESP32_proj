@@ -23,73 +23,9 @@ static void *co2_stress_config(void *arg)
 
 static void test_mhz1911a_config(void)
 {
-    mqtt_config_update_t update;
-    const unsigned valid[] = {5000, 5001, 10000, 59999, 60000};
-    for (unsigned i = 0; i < sizeof(valid) / sizeof(*valid); ++i) {
-        char payload[128];
-        uint32_t attempts = s_stats[TX_CONFIG_ACK].attempts, epoch = s_mhz1911a_epoch;
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"mhz1911a\",\"interval_ms\":%u}", valid[i]);
-        json_command(payload);
-        assert(s_stats[TX_CONFIG_ACK].attempts == attempts && s_mhz1911a_epoch == epoch);
-        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_MHZ1911A);
-        assert(update.operation == MQTT_CONFIG_INTERVAL && update.interval_ms == valid[i]);
-        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"mhz1911a\",\"status\":\"applied\",\"interval_ms\":%u}", valid[i]);
-        assert(!strcmp(last_payload, payload) && last_qos == 1 && !strcmp(last_topic, CONFIG_ACK_TOPIC));
-    }
-    const char *bad_numbers[] = {"0", "-1", "4999", "60001", "5000.5", "1e999", "4294967296"};
-    for (unsigned i = 0; i < sizeof(bad_numbers) / sizeof(*bad_numbers); ++i) {
-        char payload[100];
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"mhz1911a\",\"interval_ms\":%s}", bad_numbers[i]);
-        rejected(payload, "integer from 5000 to 60000");
-    }
-    const char *bad_types[] = {"\"10000\"", "true", "null", "[]", "{}"};
-    for (unsigned i = 0; i < sizeof(bad_types) / sizeof(*bad_types); ++i) {
-        char payload[100];
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"mhz1911a\",\"interval_ms\":%s}", bad_types[i]);
-        rejected(payload, "missing_or_invalid_interval_ms");
-    }
-    rejected("{\"sensor\":\"mhz1911a\",\"enabled\":1}", "enabled must be a boolean");
-    rejected("{\"sensor\":\"mhz1911a\",\"enabled\":\"false\"}", "enabled must be a boolean");
-    rejected("{\"sensor\":\"mhz1911a\",\"interval_ms\":10000", "invalid_json");
-    rejected("{\"sensor\":\"mhz1911a\"}", "missing_configuration_operation");
-    rejected("{\"sensor\":\"mhz1911a\",\"interval_ms\":10000,\"enabled\":false}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"mhz1911a\",\"interval_ms\":10000,\"interval_ms\":5000}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"mhz1911a\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
-    const char *commands[] = {
-        "{\"sensor\":\"mhz1911a\",\"enabled\":false}", "{\"sensor\":\"mhz1911a\",\"interval_ms\":10000}",
-        "{\"sensor\":\"mhz1911a\",\"enabled\":true}", "{\"sensor\":\"mhz1911a\",\"interval_ms\":60000}"
-    };
-    uint32_t attempts = s_stats[TX_CONFIG_ACK].attempts;
-    for (unsigned i = 0; i < 4; ++i) json_command(commands[i]);
-    assert(s_stats[TX_CONFIG_ACK].attempts == attempts);
-    json_command(commands[0]); pump();
-    assert(strstr(last_payload, "queue_full") && strstr(last_payload, "\"enabled\":false"));
-    for (unsigned i = 0; i < 4; ++i) {
-        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_MHZ1911A);
-        assert(update.operation == (i % 2 ? MQTT_CONFIG_INTERVAL : MQTT_CONFIG_ENABLED));
-        if (i % 2) assert(update.interval_ms == (i == 1 ? 10000U : 60000U));
-        else assert(update.enabled == (i == 2));
-        if (i == 1) assert(mqtt_manager_reject_config(&update, "sensor_disabled") == ESP_OK);
-        else assert(mqtt_manager_publish_config_ack(&update) == ESP_OK);
-        pump();
-        if (i == 1) assert(strstr(last_payload, "sensor_disabled"));
-        else {
-            assert(strstr(last_payload, "\"status\":\"applied\""));
-            if (i % 2 == 0) assert(strstr(last_payload, i == 0 ? "\"enabled\":false" : "\"enabled\":true"));
-        }
-        assert(last_qos == 1 && !strcmp(last_topic, CONFIG_ACK_TOPIC));
-    }
-    assert(!mqtt_manager_take_config_update(&update));
-    const char *retained = commands[0];
-    attempts = s_stats[TX_CONFIG_ACK].attempts;
-    command(retained, strlen(retained), strlen(retained), 0, true);
-    assert(!mqtt_manager_take_config_update(&update) && attempts == s_stats[TX_CONFIG_ACK].attempts);
-    puts("PASS: MH-Z1911A parser bounds/types, exact ACKs, receive-only queue ownership, FIFO order and queue-full rejection");
-
     tx_stats_t *stats = &s_stats[TX_MHZ1911A];
     int calls = publish_calls, allocations = allocs;
-    attempts = stats->attempts;
+    unsigned attempts = stats->attempts;
     assert(mqtt_manager_update_mhz1911a_snapshot(1500, ++clock_us) == ESP_OK);
     mqtt_manager_commit_mhz1911a_config(false);
     assert(!s_mhz1911a.pending && !s_mhz1911a_enabled);

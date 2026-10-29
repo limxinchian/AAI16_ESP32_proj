@@ -27,6 +27,8 @@ for component in ["spi_bus_manager", "rc522_sensor", "sensor_status", "mqtt_mana
 for name in ["test_spi", "test_rc522", "test_reader"]:
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     sources = [str(test / (name + ".c")), str(repo / "tests/sensor_host/platform.c")]
+    if name in ("test_reader", "test_control"):
+        sources += [str(repo / "tests/sensor_host/config_stub.c")]
     if name == "test_reader":
         sources += [str(repo / "components/sensor_status/sensor_status.c")]
     subprocess.run(flags + sources + ["-o", str(binary)], check=True)

@@ -52,11 +52,10 @@ static void mhz1911a_reader_task(void *arg)
         for (unsigned commands = 0; commands < 4; ++commands) {
             if (!pending_update && xTaskNotifyWait(0, UINT32_MAX, &control, 0) != pdTRUE) break;
             pending_update = false;
-            mqtt_config_update_t update = {.sensor = SENSOR_MHZ1911A};
-            bool gate = (control & CONFIG_ENABLED_FLAG) != 0;
-            update.operation = gate ? MQTT_CONFIG_ENABLED : MQTT_CONFIG_INTERVAL;
-            if (gate) update.enabled = (control & 1U) != 0;
-            else update.interval_ms = control;
+            mqtt_config_update_t update;
+            if (!mqtt_manager_take_owner_config(SENSOR_MHZ1911A, &update) ||
+                !mqtt_manager_begin_owner_config(&update)) continue;
+            bool gate = update.operation == MQTT_CONFIG_ENABLED;
             // This live probe owner accepts controls during original warm-up
             // and READ failures; generic initialized-only policy is unsuitable.
             if (!gate && !enabled) {

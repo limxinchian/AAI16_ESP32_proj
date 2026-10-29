@@ -214,7 +214,7 @@ static void test_mhz1911a_telemetry(void)
     // One mailbox remains bounded even with full queues/outbox; priorities and
     // the five existing telemetry/event paths retain their policies.
     outbox_size = OUTBOX_LIMIT_BYTES;
-    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor=SENSOR_DHT22, .interval_ms=5000}) == ESP_OK);
+    assert(queue_test_ack() == ESP_OK);
     assert(mqtt_manager_publish_gy511(1,0,0,10,20,30) == ESP_OK);
     for (unsigned i = 2; i < TX_QUEUE_SIZE; ++i) assert(mqtt_manager_publish_dht22(25,50) == ESP_OK);
     seq = stats->attempts;

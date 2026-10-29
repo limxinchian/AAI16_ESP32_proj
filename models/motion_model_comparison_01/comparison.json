@@ -1,0 +1,2370 @@
+{
+  "scope": "Fixed demo only: flat stationary desk REST vs continuous hand movement/shaking MOVING",
+  "limitations": "Two held-out sessions with correlated overlapping windows; no broad generalization claim. Holdout scores were already known for Model A; Model B uses the specified architecture and identical fixed training settings, with no holdout-based tuning or model selection.",
+  "runtime": {
+    "esp_tflite_micro": "1.4.1",
+    "esp_nn": "1.3.0",
+    "dependency_lock_sha256": "c20230dc7f61d8f9cbdaf58d10f59844474273bbc26fb6365ef429e614067718",
+    "execution": "Laptop production Engine with reference and ESP-NN ANSI kernels",
+    "limitation": "Does not exercise ESP32-S3 assembly kernels or establish target RAM/latency"
+  },
+  "models": {
+    "a": {
+      "model_version": "aai16-motion-model-a-0.1.0",
+      "manifest_sha256": "065efd4fe59d7106cdff596669a6adbb2fd9bde3a3fc9577678019c5a00e9d51",
+      "weights_sha256": "ed4614c605ab29c99ee616794ad8cf130899b1ba22a631ebe568b149f00b121a",
+      "evaluation_sha256": "f4988dd4b2ce1a653d1519bf58eed00eb254c24f79b780a109e5313716296414",
+      "evaluation_predictions_sha256": "38faa7e217cc70b948cd422f186792d8f201a8bec2a876f1f4112f62b318e870",
+      "architecture": "60 -> Dense(16, ReLU) -> Dense(2, linear logits)",
+      "parameters": 1010,
+      "training_settings": {
+        "seed": 20261028,
+        "epochs": 150,
+        "batch_size": 16,
+        "optimizer": "Adam",
+        "learning_rate": 0.001,
+        "optimizer_config": {
+          "name": "adam",
+          "learning_rate": 0.0010000000474974513,
+          "weight_decay": null,
+          "clipnorm": null,
+          "global_clipnorm": null,
+          "clipvalue": null,
+          "use_ema": false,
+          "ema_momentum": 0.99,
+          "ema_overwrite_frequency": null,
+          "loss_scale_factor": null,
+          "gradient_accumulation_steps": null,
+          "beta_1": 0.9,
+          "beta_2": 0.999,
+          "epsilon": 1e-07,
+          "amsgrad": false
+        },
+        "loss": "SparseCategoricalCrossentropy(from_logits=True)",
+        "class_weights": {
+          "REST": 1.4482758620689655,
+          "MOVING": 0.7636363636363637
+        },
+        "shuffle": "NumPy default_rng(seed).permutation per epoch, training windows only",
+        "validation_split": null,
+        "early_stopping": false,
+        "checkpoint_selection": "fixed final epoch",
+        "deterministic_ops": true,
+        "cpu_only": true,
+        "oneDNN": false,
+        "inter_op_threads": 1,
+        "intra_op_threads": 1,
+        "architecture": "60 -> Dense(16, ReLU) -> Dense(2, linear logits)",
+        "parameters": 1010
+      },
+      "training_dataset": {
+        "window_samples": 20,
+        "stride_samples": 10,
+        "gap_limit_ms": 150,
+        "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+        "total_windows": 168,
+        "class_windows": {
+          "REST": 58,
+          "MOVING": 110
+        },
+        "sessions": [
+          {
+            "file": "rest_orientation_01.csv",
+            "sha256": "64df66e093b280fa8ec93fbdae6328f750bdfe0d9d59e1a88bc99789de2a113d",
+            "session_id": "rest_orientation_01",
+            "label": "REST",
+            "rows": 599,
+            "valid_rows": 599,
+            "invalid_rows": [],
+            "boot_ranges": [
+              {
+                "boot_id": "5120e965",
+                "start_ms": 83936,
+                "end_ms": 143736
+              }
+            ],
+            "reboots": 0,
+            "duplicates": 0,
+            "out_of_order": 0,
+            "sequence_gaps": 0,
+            "sampling_gaps": [],
+            "sampling_gap_count": 0,
+            "delta_ms": {
+              "min": 98,
+              "median": 100.0,
+              "max": 102
+            },
+            "axis_statistics": {
+              "x": {
+                "min_g": -0.116,
+                "max_g": -0.094,
+                "std_g": 0.0035509766704000492
+              },
+              "y": {
+                "min_g": 0.125,
+                "max_g": 0.14,
+                "std_g": 0.0024309723948995614
+              },
+              "z": {
+                "min_g": 1.024,
+                "max_g": 1.046,
+                "std_g": 0.00398410726782576
+              }
+            },
+            "possible_saturation_row_indices": [],
+            "constant_axes": [],
+            "constant_windows": 0,
+            "candidate_windows": 58,
+            "usable_windows": 58,
+            "rejected_windows": {},
+            "warnings": []
+          },
+          {
+            "file": "moving_directions_01.csv",
+            "sha256": "1a7e6e000082073d0b52c5c9ee21ad6b61c86f11f2d724e7e272ae724c35dcbc",
+            "session_id": "moving_directions_01",
+            "label": "MOVING",
+            "rows": 598,
+            "valid_rows": 598,
+            "invalid_rows": [],
+            "boot_ranges": [
+              {
+                "boot_id": "5120e965",
+                "start_ms": 427636,
+                "end_ms": 487536
+              }
+            ],
+            "reboots": 0,
+            "duplicates": 0,
+            "out_of_order": 0,
+            "sequence_gaps": 0,
+            "sampling_gaps": [
+              {
+                "row_index": 526,
+                "csv_line": 528,
+                "delta_ms": 199
+              },
+              {
+                "row_index": 579,
+                "csv_line": 581,
+                "delta_ms": 200
+              }
+            ],
+            "sampling_gap_count": 2,
+            "delta_ms": {
+              "min": 98,
+              "median": 100.0,
+              "max": 200
+            },
+            "axis_statistics": {
+              "x": {
+                "min_g": -1.321,
+                "max_g": 0.577,
+                "std_g": 0.22217989574863906
+              },
+              "y": {
+                "min_g": -0.882,
+                "max_g": 1.343,
+                "std_g": 0.2605863431035015
+              },
+              "z": {
+                "min_g": 0.227,
+                "max_g": 1.64,
+                "std_g": 0.18262668251088351
+              }
+            },
+            "possible_saturation_row_indices": [],
+            "constant_axes": [],
+            "constant_windows": 0,
+            "candidate_windows": 58,
+            "usable_windows": 54,
+            "rejected_windows": {
+              "sampling_gap": 4
+            },
+            "warnings": []
+          },
+          {
+            "file": "moving_directions_02.csv",
+            "sha256": "31393ab68737381a9504e02ca0a2184e4f5bbcd99267b4a0518acae8872c999c",
+            "session_id": "moving_directions_02",
+            "label": "MOVING",
+            "rows": 599,
+            "valid_rows": 599,
+            "invalid_rows": [],
+            "boot_ranges": [
+              {
+                "boot_id": "5120e965",
+                "start_ms": 621536,
+                "end_ms": 681436
+              }
+            ],
+            "reboots": 0,
+            "duplicates": 0,
+            "out_of_order": 0,
+            "sequence_gaps": 0,
+            "sampling_gaps": [
+              {
+                "row_index": 202,
+                "csv_line": 204,
+                "delta_ms": 201
+              }
+            ],
+            "sampling_gap_count": 1,
+            "delta_ms": {
+              "min": 99,
+              "median": 100.0,
+              "max": 201
+            },
+            "axis_statistics": {
+              "x": {
+                "min_g": -0.461,
+                "max_g": 0.486,
+                "std_g": 0.14355499470556565
+              },
+              "y": {
+                "min_g": -0.269,
+                "max_g": 0.909,
+                "std_g": 0.18490666136087672
+              },
+              "z": {
+                "min_g": 0.324,
+                "max_g": 1.571,
+                "std_g": 0.20562773964406625
+              }
+            },
+            "possible_saturation_row_indices": [],
+            "constant_axes": [],
+            "constant_windows": 0,
+            "candidate_windows": 58,
+            "usable_windows": 56,
+            "rejected_windows": {
+              "sampling_gap": 2
+            },
+            "warnings": []
+          }
+        ]
+      },
+      "exports": {
+        "model.keras": {
+          "sha256": "0922fb3deed29858a5d3171d64ef59382047f39b0b5160fe12743346c97aa872",
+          "bytes": 33360
+        },
+        "model_float32.tflite": {
+          "sha256": "e1e795767dba3157ff4ade990e132bd1ece9e1c2579ef24945fb9780a008a723",
+          "bytes": 5500
+        },
+        "model_int8.tflite": {
+          "sha256": "1885f051bb81daa9f4f8ff12ee39a0706ac4d45999b823ef91ade991e5a4b7aa",
+          "bytes": 3104
+        }
+      },
+      "training_results": {
+        "evaluation_type": "training-set resubstitution sanity check only",
+        "independent_evaluation": "pending rest_orientation_02 and moving_directions_03",
+        "limitation": "one REST session; overlapping windows are not independent; no generalization or accuracy requirement claim",
+        "keras": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "tflite_float32": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "tflite_int8": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "rms_baseline": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "keras_vs_tflite_float32": {
+          "vectors": 168,
+          "prediction_agreement_count": 168,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 1.763304074605306e-07,
+          "logit_max_absolute_error": 1.430511474609375e-06,
+          "disagreement_vector_indices": []
+        },
+        "keras_vs_tflite_int8": {
+          "vectors": 168,
+          "prediction_agreement_count": 168,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 0.013064043862479073,
+          "logit_max_absolute_error": 0.05732607841491699,
+          "disagreement_vector_indices": []
+        }
+      },
+      "independent_results": {
+        "mode": "independent",
+        "created_utc": "2026-10-28T04:49:54.332134+00:00",
+        "model_version": "aai16-motion-model-a-0.1.0",
+        "model_manifest_sha256": "065efd4fe59d7106cdff596669a6adbb2fd9bde3a3fc9577678019c5a00e9d51",
+        "dataset": {
+          "window_samples": 20,
+          "stride_samples": 10,
+          "gap_limit_ms": 150,
+          "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+          "total_windows": 112,
+          "class_windows": {
+            "REST": 56,
+            "MOVING": 56
+          },
+          "sessions": [
+            {
+              "file": "rest_orientation_02.csv",
+              "sha256": "4a743c0bdffa40f12f4e7426552974362b1d61bfb66eb69696aa10041f711558",
+              "session_id": "rest_orientation_02_retry",
+              "label": "REST",
+              "rows": 598,
+              "valid_rows": 598,
+              "invalid_rows": [],
+              "boot_ranges": [
+                {
+                  "boot_id": "71f086ee",
+                  "start_ms": 226566,
+                  "end_ms": 286466
+                }
+              ],
+              "reboots": 0,
+              "duplicates": 0,
+              "out_of_order": 0,
+              "sequence_gaps": 2,
+              "sampling_gaps": [
+                {
+                  "row_index": 478,
+                  "csv_line": 480,
+                  "delta_ms": 300
+                }
+              ],
+              "sampling_gap_count": 1,
+              "delta_ms": {
+                "min": 98,
+                "median": 100.0,
+                "max": 300
+              },
+              "axis_statistics": {
+                "x": {
+                  "min_g": -0.275,
+                  "max_g": -0.249,
+                  "std_g": 0.0038721417350785024
+                },
+                "y": {
+                  "min_g": -0.043,
+                  "max_g": -0.002,
+                  "std_g": 0.006551673006945779
+                },
+                "z": {
+                  "min_g": 0.996,
+                  "max_g": 1.041,
+                  "std_g": 0.006173267349024393
+                }
+              },
+              "possible_saturation_row_indices": [],
+              "constant_axes": [],
+              "constant_windows": 0,
+              "candidate_windows": 58,
+              "usable_windows": 56,
+              "rejected_windows": {
+                "sampling_gap+sequence_gap": 2
+              },
+              "warnings": []
+            },
+            {
+              "file": "moving_directions_03.csv",
+              "sha256": "74242dc2dff316d4bb39f2f6ec0eed6cc447841fce54c93cf5e1c5693607944f",
+              "session_id": "moving_directions_03",
+              "label": "MOVING",
+              "rows": 599,
+              "valid_rows": 599,
+              "invalid_rows": [],
+              "boot_ranges": [
+                {
+                  "boot_id": "71f086ee",
+                  "start_ms": 673166,
+                  "end_ms": 733066
+                }
+              ],
+              "reboots": 0,
+              "duplicates": 0,
+              "out_of_order": 0,
+              "sequence_gaps": 0,
+              "sampling_gaps": [
+                {
+                  "row_index": 141,
+                  "csv_line": 143,
+                  "delta_ms": 200
+                }
+              ],
+              "sampling_gap_count": 1,
+              "delta_ms": {
+                "min": 98,
+                "median": 100.0,
+                "max": 200
+              },
+              "axis_statistics": {
+                "x": {
+                  "min_g": -0.952,
+                  "max_g": 1.121,
+                  "std_g": 0.3070728601469816
+                },
+                "y": {
+                  "min_g": -1.64,
+                  "max_g": 1.392,
+                  "std_g": 0.48775993567551396
+                },
+                "z": {
+                  "min_g": 0.098,
+                  "max_g": 1.979,
+                  "std_g": 0.3157638891887815
+                }
+              },
+              "possible_saturation_row_indices": [],
+              "constant_axes": [],
+              "constant_windows": 0,
+              "candidate_windows": 58,
+              "usable_windows": 56,
+              "rejected_windows": {
+                "sampling_gap": 2
+              },
+              "warnings": []
+            }
+          ]
+        },
+        "baseline_threshold_g_frozen": 0.08883622916580566,
+        "keras": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              1,
+              55
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 0.9910714285714286,
+          "balanced_accuracy": 0.9910714285714286,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 0.9824561403508771,
+              "recall": 1.0,
+              "f1": 0.9911504424778761
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 0.9821428571428571,
+              "f1": 0.9909909909909909
+            }
+          }
+        },
+        "tflite_float32": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              1,
+              55
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 0.9910714285714286,
+          "balanced_accuracy": 0.9910714285714286,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 0.9824561403508771,
+              "recall": 1.0,
+              "f1": 0.9911504424778761
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 0.9821428571428571,
+              "f1": 0.9909909909909909
+            }
+          }
+        },
+        "tflite_int8": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              1,
+              55
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 0.9910714285714286,
+          "balanced_accuracy": 0.9910714285714286,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 0.9824561403508771,
+              "recall": 1.0,
+              "f1": 0.9911504424778761
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 0.9821428571428571,
+              "f1": 0.9909909909909909
+            }
+          }
+        },
+        "rms_baseline": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              0,
+              56
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "keras_vs_tflite_float32": {
+          "vectors": 112,
+          "prediction_agreement_count": 112,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 1.444880451474871e-07,
+          "logit_max_absolute_error": 9.5367431640625e-07,
+          "disagreement_vector_indices": []
+        },
+        "keras_vs_tflite_int8": {
+          "vectors": 112,
+          "prediction_agreement_count": 112,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 0.14759504778443702,
+          "logit_max_absolute_error": 1.3048782348632812,
+          "disagreement_vector_indices": []
+        },
+        "int8_input_elements_clipped": 157,
+        "limitations": "Independent recordings, but only two sessions; overlapping windows are correlated and the demo scope is narrow"
+      },
+      "quantization": {
+        "method": "post-training full integer quantization, TFLITE_BUILTINS_INT8",
+        "representative_vectors": 168,
+        "representative_source": "all training windows only",
+        "float32": {
+          "input": {
+            "name": "serving_default_features:0",
+            "index": 0,
+            "shape": [
+              1,
+              60
+            ],
+            "shape_signature": [
+              1,
+              60
+            ],
+            "dtype": "float32",
+            "scales": [],
+            "zero_points": [],
+            "quantized_dimension": 0
+          },
+          "output": {
+            "name": "StatefulPartitionedCall_1:0",
+            "index": 6,
+            "shape": [
+              1,
+              2
+            ],
+            "shape_signature": [
+              1,
+              2
+            ],
+            "dtype": "float32",
+            "scales": [],
+            "zero_points": [],
+            "quantized_dimension": 0
+          },
+          "operators": [
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 1,
+              "inputs": [
+                0,
+                3,
+                4
+              ],
+              "outputs": [
+                5
+              ],
+              "fused_activation": "RELU"
+            },
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 1,
+              "inputs": [
+                5,
+                2,
+                1
+              ],
+              "outputs": [
+                6
+              ],
+              "fused_activation": "NONE"
+            }
+          ],
+          "tensors": [
+            {
+              "name": "serving_default_features:0",
+              "index": 0,
+              "shape": [
+                1,
+                60
+              ],
+              "shape_signature": [
+                1,
+                60
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "arith.constant",
+              "index": 1,
+              "shape": [
+                2
+              ],
+              "shape_signature": [
+                2
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "arith.constant1",
+              "index": 2,
+              "shape": [
+                2,
+                16
+              ],
+              "shape_signature": [
+                2,
+                16
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_a_1/hidden_1/MatMul",
+              "index": 3,
+              "shape": [
+                16,
+                60
+              ],
+              "shape_signature": [
+                16,
+                60
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_a_1/hidden_1/Relu;motion_model_a_1/hidden_1/BiasAdd",
+              "index": 4,
+              "shape": [
+                16
+              ],
+              "shape_signature": [
+                16
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_a_1/hidden_1/MatMul;motion_model_a_1/hidden_1/Relu;motion_model_a_1/hidden_1/BiasAdd",
+              "index": 5,
+              "shape": [
+                1,
+                16
+              ],
+              "shape_signature": [
+                1,
+                16
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "StatefulPartitionedCall_1:0",
+              "index": 6,
+              "shape": [
+                1,
+                2
+              ],
+              "shape_signature": [
+                1,
+                2
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            }
+          ]
+        },
+        "int8": {
+          "input": {
+            "name": "serving_default_features:0",
+            "index": 0,
+            "shape": [
+              1,
+              60
+            ],
+            "shape_signature": [
+              1,
+              60
+            ],
+            "dtype": "int8",
+            "scales": [
+              0.0031422548927366734
+            ],
+            "zero_points": [
+              12
+            ],
+            "quantized_dimension": 0
+          },
+          "output": {
+            "name": "StatefulPartitionedCall_1:0",
+            "index": 6,
+            "shape": [
+              1,
+              2
+            ],
+            "shape_signature": [
+              1,
+              2
+            ],
+            "dtype": "int8",
+            "scales": [
+              0.046926043927669525
+            ],
+            "zero_points": [
+              -12
+            ],
+            "quantized_dimension": 0
+          },
+          "operators": [
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 4,
+              "inputs": [
+                0,
+                4,
+                3
+              ],
+              "outputs": [
+                5
+              ],
+              "fused_activation": "RELU"
+            },
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 4,
+              "inputs": [
+                5,
+                2,
+                1
+              ],
+              "outputs": [
+                6
+              ],
+              "fused_activation": "NONE"
+            }
+          ],
+          "tensors": [
+            {
+              "name": "serving_default_features:0",
+              "index": 0,
+              "shape": [
+                1,
+                60
+              ],
+              "shape_signature": [
+                1,
+                60
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.0031422548927366734
+              ],
+              "zero_points": [
+                12
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst",
+              "index": 1,
+              "shape": [
+                2
+              ],
+              "shape_signature": [
+                2
+              ],
+              "dtype": "int32",
+              "scales": [
+                7.717210974078625e-05,
+                7.828204979887232e-05
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst1",
+              "index": 2,
+              "shape": [
+                2,
+                16
+              ],
+              "shape_signature": [
+                2,
+                16
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.011709051206707954,
+                0.011877458542585373
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst2",
+              "index": 3,
+              "shape": [
+                16
+              ],
+              "shape_signature": [
+                16
+              ],
+              "dtype": "int32",
+              "scales": [
+                2.6774343496072106e-05,
+                2.8205067792441696e-05,
+                2.7139092708239332e-05,
+                2.8519636543933302e-05,
+                6.783690423617372e-06,
+                2.9613947845064104e-05,
+                2.2437261577579193e-05,
+                2.1616555386572145e-05,
+                2.4882154320948757e-05,
+                2.022780608967878e-05,
+                6.95087783242343e-06,
+                6.426614163501654e-06,
+                6.643641427217517e-06,
+                2.821357520588208e-05,
+                2.371807386225555e-05,
+                2.893748569476884e-05
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst3",
+              "index": 4,
+              "shape": [
+                16,
+                60
+              ],
+              "shape_signature": [
+                16,
+                60
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.008520741946995258,
+                0.008976059965789318,
+                0.008636821061372757,
+                0.00907616876065731,
+                0.0021588606759905815,
+                0.009424425661563873,
+                0.007140497211366892,
+                0.006879313383251429,
+                0.007918566465377808,
+                0.006437353789806366,
+                0.00221206690184772,
+                0.0020452237222343683,
+                0.0021142910700291395,
+                0.008978767320513725,
+                0.0075481063686311245,
+                0.009209146723151207
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_a_1/hidden_1/MatMul;motion_model_a_1/hidden_1/Relu;motion_model_a_1/hidden_1/BiasAdd",
+              "index": 5,
+              "shape": [
+                1,
+                16
+              ],
+              "shape_signature": [
+                1,
+                16
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.006590807810425758
+              ],
+              "zero_points": [
+                -128
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "StatefulPartitionedCall_1:0",
+              "index": 6,
+              "shape": [
+                1,
+                2
+              ],
+              "shape_signature": [
+                1,
+                2
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.046926043927669525
+              ],
+              "zero_points": [
+                -12
+              ],
+              "quantized_dimension": 0
+            }
+          ]
+        },
+        "training_feature_min": -0.4410499930381775,
+        "training_feature_max": 0.36022499203681946,
+        "training_input_elements_clipped": 0,
+        "warning": "Calibration uses observed training range; stronger future movement may clip INT8 inputs"
+      },
+      "host_runtime": {
+        "training": {
+          "reference": {
+            "vectors": 168,
+            "output_elements": 336,
+            "different_output_elements": 2,
+            "maximum_output_difference_lsb": 1,
+            "classification_agreement_count": 168,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 168 vectors"
+          },
+          "esp_nn_ansi": {
+            "vectors": 168,
+            "output_elements": 336,
+            "different_output_elements": 2,
+            "maximum_output_difference_lsb": 1,
+            "classification_agreement_count": 168,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 168 vectors"
+          }
+        },
+        "independent": {
+          "reference": {
+            "vectors": 112,
+            "output_elements": 224,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 112,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 112 vectors"
+          },
+          "esp_nn_ansi": {
+            "vectors": 112,
+            "output_elements": 224,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 112,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 112 vectors"
+          }
+        },
+        "golden": {
+          "reference": {
+            "vectors": 4,
+            "output_elements": 8,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 4,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 4 vectors"
+          },
+          "esp_nn_ansi": {
+            "vectors": 4,
+            "output_elements": 8,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 4,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 4 vectors"
+          }
+        }
+      }
+    },
+    "b": {
+      "model_version": "aai16-motion-model-b-0.1.0",
+      "manifest_sha256": "6e9f2b02e8b561832ae2af56b24e6f5b62730009028a86bc81fad21dde3b556e",
+      "weights_sha256": "3d10b6cfc966ae0480a875f8a4500e049b091075d5ed07481c946742b63f02f6",
+      "evaluation_sha256": "eb4aeb12ae31e672265a56649c0e82a4734468b874a840e733a946d6d33fcd70",
+      "evaluation_predictions_sha256": "889e1f6917b405a989f80261f635c2164f7e90d9d94f06700e2680f65443a9dd",
+      "architecture": "60 -> Dense(8, ReLU) -> Dense(2, linear logits)",
+      "parameters": 506,
+      "training_settings": {
+        "seed": 20261028,
+        "epochs": 150,
+        "batch_size": 16,
+        "optimizer": "Adam",
+        "learning_rate": 0.001,
+        "optimizer_config": {
+          "name": "adam",
+          "learning_rate": 0.0010000000474974513,
+          "weight_decay": null,
+          "clipnorm": null,
+          "global_clipnorm": null,
+          "clipvalue": null,
+          "use_ema": false,
+          "ema_momentum": 0.99,
+          "ema_overwrite_frequency": null,
+          "loss_scale_factor": null,
+          "gradient_accumulation_steps": null,
+          "beta_1": 0.9,
+          "beta_2": 0.999,
+          "epsilon": 1e-07,
+          "amsgrad": false
+        },
+        "loss": "SparseCategoricalCrossentropy(from_logits=True)",
+        "class_weights": {
+          "REST": 1.4482758620689655,
+          "MOVING": 0.7636363636363637
+        },
+        "shuffle": "NumPy default_rng(seed).permutation per epoch, training windows only",
+        "validation_split": null,
+        "early_stopping": false,
+        "checkpoint_selection": "fixed final epoch",
+        "deterministic_ops": true,
+        "cpu_only": true,
+        "oneDNN": false,
+        "inter_op_threads": 1,
+        "intra_op_threads": 1,
+        "architecture": "60 -> Dense(8, ReLU) -> Dense(2, linear logits)",
+        "parameters": 506
+      },
+      "training_dataset": {
+        "window_samples": 20,
+        "stride_samples": 10,
+        "gap_limit_ms": 150,
+        "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+        "total_windows": 168,
+        "class_windows": {
+          "REST": 58,
+          "MOVING": 110
+        },
+        "sessions": [
+          {
+            "file": "rest_orientation_01.csv",
+            "sha256": "64df66e093b280fa8ec93fbdae6328f750bdfe0d9d59e1a88bc99789de2a113d",
+            "session_id": "rest_orientation_01",
+            "label": "REST",
+            "rows": 599,
+            "valid_rows": 599,
+            "invalid_rows": [],
+            "boot_ranges": [
+              {
+                "boot_id": "5120e965",
+                "start_ms": 83936,
+                "end_ms": 143736
+              }
+            ],
+            "reboots": 0,
+            "duplicates": 0,
+            "out_of_order": 0,
+            "sequence_gaps": 0,
+            "sampling_gaps": [],
+            "sampling_gap_count": 0,
+            "delta_ms": {
+              "min": 98,
+              "median": 100.0,
+              "max": 102
+            },
+            "axis_statistics": {
+              "x": {
+                "min_g": -0.116,
+                "max_g": -0.094,
+                "std_g": 0.0035509766704000492
+              },
+              "y": {
+                "min_g": 0.125,
+                "max_g": 0.14,
+                "std_g": 0.0024309723948995614
+              },
+              "z": {
+                "min_g": 1.024,
+                "max_g": 1.046,
+                "std_g": 0.00398410726782576
+              }
+            },
+            "possible_saturation_row_indices": [],
+            "constant_axes": [],
+            "constant_windows": 0,
+            "candidate_windows": 58,
+            "usable_windows": 58,
+            "rejected_windows": {},
+            "warnings": []
+          },
+          {
+            "file": "moving_directions_01.csv",
+            "sha256": "1a7e6e000082073d0b52c5c9ee21ad6b61c86f11f2d724e7e272ae724c35dcbc",
+            "session_id": "moving_directions_01",
+            "label": "MOVING",
+            "rows": 598,
+            "valid_rows": 598,
+            "invalid_rows": [],
+            "boot_ranges": [
+              {
+                "boot_id": "5120e965",
+                "start_ms": 427636,
+                "end_ms": 487536
+              }
+            ],
+            "reboots": 0,
+            "duplicates": 0,
+            "out_of_order": 0,
+            "sequence_gaps": 0,
+            "sampling_gaps": [
+              {
+                "row_index": 526,
+                "csv_line": 528,
+                "delta_ms": 199
+              },
+              {
+                "row_index": 579,
+                "csv_line": 581,
+                "delta_ms": 200
+              }
+            ],
+            "sampling_gap_count": 2,
+            "delta_ms": {
+              "min": 98,
+              "median": 100.0,
+              "max": 200
+            },
+            "axis_statistics": {
+              "x": {
+                "min_g": -1.321,
+                "max_g": 0.577,
+                "std_g": 0.22217989574863906
+              },
+              "y": {
+                "min_g": -0.882,
+                "max_g": 1.343,
+                "std_g": 0.2605863431035015
+              },
+              "z": {
+                "min_g": 0.227,
+                "max_g": 1.64,
+                "std_g": 0.18262668251088351
+              }
+            },
+            "possible_saturation_row_indices": [],
+            "constant_axes": [],
+            "constant_windows": 0,
+            "candidate_windows": 58,
+            "usable_windows": 54,
+            "rejected_windows": {
+              "sampling_gap": 4
+            },
+            "warnings": []
+          },
+          {
+            "file": "moving_directions_02.csv",
+            "sha256": "31393ab68737381a9504e02ca0a2184e4f5bbcd99267b4a0518acae8872c999c",
+            "session_id": "moving_directions_02",
+            "label": "MOVING",
+            "rows": 599,
+            "valid_rows": 599,
+            "invalid_rows": [],
+            "boot_ranges": [
+              {
+                "boot_id": "5120e965",
+                "start_ms": 621536,
+                "end_ms": 681436
+              }
+            ],
+            "reboots": 0,
+            "duplicates": 0,
+            "out_of_order": 0,
+            "sequence_gaps": 0,
+            "sampling_gaps": [
+              {
+                "row_index": 202,
+                "csv_line": 204,
+                "delta_ms": 201
+              }
+            ],
+            "sampling_gap_count": 1,
+            "delta_ms": {
+              "min": 99,
+              "median": 100.0,
+              "max": 201
+            },
+            "axis_statistics": {
+              "x": {
+                "min_g": -0.461,
+                "max_g": 0.486,
+                "std_g": 0.14355499470556565
+              },
+              "y": {
+                "min_g": -0.269,
+                "max_g": 0.909,
+                "std_g": 0.18490666136087672
+              },
+              "z": {
+                "min_g": 0.324,
+                "max_g": 1.571,
+                "std_g": 0.20562773964406625
+              }
+            },
+            "possible_saturation_row_indices": [],
+            "constant_axes": [],
+            "constant_windows": 0,
+            "candidate_windows": 58,
+            "usable_windows": 56,
+            "rejected_windows": {
+              "sampling_gap": 2
+            },
+            "warnings": []
+          }
+        ]
+      },
+      "exports": {
+        "model.keras": {
+          "sha256": "442d7acbcd3540fa2575e3467f96d4cb55931b77fea5bc8e4221bf8da2898e78",
+          "bytes": 27310
+        },
+        "model_float32.tflite": {
+          "sha256": "83bca84898d4225df26b6abefe980d4d8a07f3e30d192e910399b6f4626c7f26",
+          "bytes": 3484
+        },
+        "model_int8.tflite": {
+          "sha256": "6ec06da5b5fe3d12fdd99328be1e8adf10bc3d78f3c7191bcb06dcd2f5279aff",
+          "bytes": 2384
+        }
+      },
+      "training_results": {
+        "evaluation_type": "training-set resubstitution sanity check only",
+        "independent_evaluation": "pending rest_orientation_02 and moving_directions_03",
+        "limitation": "one REST session; overlapping windows are not independent; no generalization or accuracy requirement claim",
+        "keras": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "tflite_float32": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "tflite_int8": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "rms_baseline": {
+          "samples": 168,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              58,
+              0
+            ],
+            [
+              0,
+              110
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 58,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 110,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "keras_vs_tflite_float32": {
+          "vectors": 168,
+          "prediction_agreement_count": 168,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 1.491890067145938e-07,
+          "logit_max_absolute_error": 9.5367431640625e-07,
+          "disagreement_vector_indices": []
+        },
+        "keras_vs_tflite_int8": {
+          "vectors": 168,
+          "prediction_agreement_count": 168,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 0.01632045198320633,
+          "logit_max_absolute_error": 0.06792116165161133,
+          "disagreement_vector_indices": []
+        }
+      },
+      "independent_results": {
+        "mode": "independent",
+        "created_utc": "2026-10-28T06:47:25.357135+00:00",
+        "model_version": "aai16-motion-model-b-0.1.0",
+        "model_manifest_sha256": "6e9f2b02e8b561832ae2af56b24e6f5b62730009028a86bc81fad21dde3b556e",
+        "dataset": {
+          "window_samples": 20,
+          "stride_samples": 10,
+          "gap_limit_ms": 150,
+          "stride_policy": "original session row grid; reject crossing windows; no reanchoring",
+          "total_windows": 112,
+          "class_windows": {
+            "REST": 56,
+            "MOVING": 56
+          },
+          "sessions": [
+            {
+              "file": "rest_orientation_02.csv",
+              "sha256": "4a743c0bdffa40f12f4e7426552974362b1d61bfb66eb69696aa10041f711558",
+              "session_id": "rest_orientation_02_retry",
+              "label": "REST",
+              "rows": 598,
+              "valid_rows": 598,
+              "invalid_rows": [],
+              "boot_ranges": [
+                {
+                  "boot_id": "71f086ee",
+                  "start_ms": 226566,
+                  "end_ms": 286466
+                }
+              ],
+              "reboots": 0,
+              "duplicates": 0,
+              "out_of_order": 0,
+              "sequence_gaps": 2,
+              "sampling_gaps": [
+                {
+                  "row_index": 478,
+                  "csv_line": 480,
+                  "delta_ms": 300
+                }
+              ],
+              "sampling_gap_count": 1,
+              "delta_ms": {
+                "min": 98,
+                "median": 100.0,
+                "max": 300
+              },
+              "axis_statistics": {
+                "x": {
+                  "min_g": -0.275,
+                  "max_g": -0.249,
+                  "std_g": 0.0038721417350785024
+                },
+                "y": {
+                  "min_g": -0.043,
+                  "max_g": -0.002,
+                  "std_g": 0.006551673006945779
+                },
+                "z": {
+                  "min_g": 0.996,
+                  "max_g": 1.041,
+                  "std_g": 0.006173267349024393
+                }
+              },
+              "possible_saturation_row_indices": [],
+              "constant_axes": [],
+              "constant_windows": 0,
+              "candidate_windows": 58,
+              "usable_windows": 56,
+              "rejected_windows": {
+                "sampling_gap+sequence_gap": 2
+              },
+              "warnings": []
+            },
+            {
+              "file": "moving_directions_03.csv",
+              "sha256": "74242dc2dff316d4bb39f2f6ec0eed6cc447841fce54c93cf5e1c5693607944f",
+              "session_id": "moving_directions_03",
+              "label": "MOVING",
+              "rows": 599,
+              "valid_rows": 599,
+              "invalid_rows": [],
+              "boot_ranges": [
+                {
+                  "boot_id": "71f086ee",
+                  "start_ms": 673166,
+                  "end_ms": 733066
+                }
+              ],
+              "reboots": 0,
+              "duplicates": 0,
+              "out_of_order": 0,
+              "sequence_gaps": 0,
+              "sampling_gaps": [
+                {
+                  "row_index": 141,
+                  "csv_line": 143,
+                  "delta_ms": 200
+                }
+              ],
+              "sampling_gap_count": 1,
+              "delta_ms": {
+                "min": 98,
+                "median": 100.0,
+                "max": 200
+              },
+              "axis_statistics": {
+                "x": {
+                  "min_g": -0.952,
+                  "max_g": 1.121,
+                  "std_g": 0.3070728601469816
+                },
+                "y": {
+                  "min_g": -1.64,
+                  "max_g": 1.392,
+                  "std_g": 0.48775993567551396
+                },
+                "z": {
+                  "min_g": 0.098,
+                  "max_g": 1.979,
+                  "std_g": 0.3157638891887815
+                }
+              },
+              "possible_saturation_row_indices": [],
+              "constant_axes": [],
+              "constant_windows": 0,
+              "candidate_windows": 58,
+              "usable_windows": 56,
+              "rejected_windows": {
+                "sampling_gap": 2
+              },
+              "warnings": []
+            }
+          ]
+        },
+        "baseline_threshold_g_frozen": 0.08883622916580566,
+        "keras": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              3,
+              53
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 0.9732142857142857,
+          "balanced_accuracy": 0.9732142857142857,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 0.9491525423728814,
+              "recall": 1.0,
+              "f1": 0.9739130434782608
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 0.9464285714285714,
+              "f1": 0.9724770642201834
+            }
+          }
+        },
+        "tflite_float32": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              3,
+              53
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 0.9732142857142857,
+          "balanced_accuracy": 0.9732142857142857,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 0.9491525423728814,
+              "recall": 1.0,
+              "f1": 0.9739130434782608
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 0.9464285714285714,
+              "f1": 0.9724770642201834
+            }
+          }
+        },
+        "tflite_int8": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              7,
+              49
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 0.9375,
+          "balanced_accuracy": 0.9375,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 0.8888888888888888,
+              "recall": 1.0,
+              "f1": 0.9411764705882353
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 0.875,
+              "f1": 0.9333333333333333
+            }
+          }
+        },
+        "rms_baseline": {
+          "samples": 112,
+          "confusion_matrix_rows_true_columns_predicted": [
+            [
+              56,
+              0
+            ],
+            [
+              0,
+              56
+            ]
+          ],
+          "class_order": [
+            "REST",
+            "MOVING"
+          ],
+          "accuracy": 1.0,
+          "balanced_accuracy": 1.0,
+          "per_class": {
+            "REST": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            },
+            "MOVING": {
+              "support": 56,
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0
+            }
+          }
+        },
+        "keras_vs_tflite_float32": {
+          "vectors": 112,
+          "prediction_agreement_count": 112,
+          "prediction_agreement_fraction": 1.0,
+          "logit_mean_absolute_error": 1.194753817149571e-07,
+          "logit_max_absolute_error": 9.5367431640625e-07,
+          "disagreement_vector_indices": []
+        },
+        "keras_vs_tflite_int8": {
+          "vectors": 112,
+          "prediction_agreement_count": 108,
+          "prediction_agreement_fraction": 0.9642857142857143,
+          "logit_mean_absolute_error": 0.12297381098116082,
+          "logit_max_absolute_error": 2.008152961730957,
+          "disagreement_vector_indices": [
+            102,
+            104,
+            110,
+            111
+          ]
+        },
+        "int8_input_elements_clipped": 157,
+        "limitations": "Independent recordings, but only two sessions; overlapping windows are correlated and the demo scope is narrow"
+      },
+      "quantization": {
+        "method": "post-training full integer quantization, TFLITE_BUILTINS_INT8",
+        "representative_vectors": 168,
+        "representative_source": "all training windows only",
+        "float32": {
+          "input": {
+            "name": "serving_default_features:0",
+            "index": 0,
+            "shape": [
+              1,
+              60
+            ],
+            "shape_signature": [
+              1,
+              60
+            ],
+            "dtype": "float32",
+            "scales": [],
+            "zero_points": [],
+            "quantized_dimension": 0
+          },
+          "output": {
+            "name": "StatefulPartitionedCall_1:0",
+            "index": 6,
+            "shape": [
+              1,
+              2
+            ],
+            "shape_signature": [
+              1,
+              2
+            ],
+            "dtype": "float32",
+            "scales": [],
+            "zero_points": [],
+            "quantized_dimension": 0
+          },
+          "operators": [
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 1,
+              "inputs": [
+                0,
+                3,
+                4
+              ],
+              "outputs": [
+                5
+              ],
+              "fused_activation": "RELU"
+            },
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 1,
+              "inputs": [
+                5,
+                2,
+                1
+              ],
+              "outputs": [
+                6
+              ],
+              "fused_activation": "NONE"
+            }
+          ],
+          "tensors": [
+            {
+              "name": "serving_default_features:0",
+              "index": 0,
+              "shape": [
+                1,
+                60
+              ],
+              "shape_signature": [
+                1,
+                60
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "arith.constant",
+              "index": 1,
+              "shape": [
+                2
+              ],
+              "shape_signature": [
+                2
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "arith.constant1",
+              "index": 2,
+              "shape": [
+                2,
+                8
+              ],
+              "shape_signature": [
+                2,
+                8
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_b_1/hidden_1/MatMul",
+              "index": 3,
+              "shape": [
+                8,
+                60
+              ],
+              "shape_signature": [
+                8,
+                60
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_b_1/hidden_1/Relu;motion_model_b_1/hidden_1/BiasAdd",
+              "index": 4,
+              "shape": [
+                8
+              ],
+              "shape_signature": [
+                8
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_b_1/hidden_1/MatMul;motion_model_b_1/hidden_1/Relu;motion_model_b_1/hidden_1/BiasAdd",
+              "index": 5,
+              "shape": [
+                1,
+                8
+              ],
+              "shape_signature": [
+                1,
+                8
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "StatefulPartitionedCall_1:0",
+              "index": 6,
+              "shape": [
+                1,
+                2
+              ],
+              "shape_signature": [
+                1,
+                2
+              ],
+              "dtype": "float32",
+              "scales": [],
+              "zero_points": [],
+              "quantized_dimension": 0
+            }
+          ]
+        },
+        "int8": {
+          "input": {
+            "name": "serving_default_features:0",
+            "index": 0,
+            "shape": [
+              1,
+              60
+            ],
+            "shape_signature": [
+              1,
+              60
+            ],
+            "dtype": "int8",
+            "scales": [
+              0.0031422548927366734
+            ],
+            "zero_points": [
+              12
+            ],
+            "quantized_dimension": 0
+          },
+          "output": {
+            "name": "StatefulPartitionedCall_1:0",
+            "index": 6,
+            "shape": [
+              1,
+              2
+            ],
+            "shape_signature": [
+              1,
+              2
+            ],
+            "dtype": "int8",
+            "scales": [
+              0.0462011881172657
+            ],
+            "zero_points": [
+              -29
+            ],
+            "quantized_dimension": 0
+          },
+          "operators": [
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 4,
+              "inputs": [
+                0,
+                4,
+                3
+              ],
+              "outputs": [
+                5
+              ],
+              "fused_activation": "RELU"
+            },
+            {
+              "operator": "FULLY_CONNECTED",
+              "version": 4,
+              "inputs": [
+                5,
+                2,
+                1
+              ],
+              "outputs": [
+                6
+              ],
+              "fused_activation": "NONE"
+            }
+          ],
+          "tensors": [
+            {
+              "name": "serving_default_features:0",
+              "index": 0,
+              "shape": [
+                1,
+                60
+              ],
+              "shape_signature": [
+                1,
+                60
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.0031422548927366734
+              ],
+              "zero_points": [
+                12
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst",
+              "index": 1,
+              "shape": [
+                2
+              ],
+              "shape_signature": [
+                2
+              ],
+              "dtype": "int32",
+              "scales": [
+                0.00014057198131922632,
+                0.00014489403110928833
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst1",
+              "index": 2,
+              "shape": [
+                2,
+                8
+              ],
+              "shape_signature": [
+                2,
+                8
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.0139423543587327,
+                0.014371028169989586
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst2",
+              "index": 3,
+              "shape": [
+                8
+              ],
+              "shape_signature": [
+                8
+              ],
+              "dtype": "int32",
+              "scales": [
+                3.145525261061266e-05,
+                2.807931559800636e-05,
+                2.9134667784092017e-05,
+                3.4474047424737364e-05,
+                6.394213414750993e-06,
+                2.831042729667388e-05,
+                2.561424480518326e-05,
+                2.2326667021843605e-05
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "tfl.pseudo_qconst3",
+              "index": 4,
+              "shape": [
+                8,
+                60
+              ],
+              "shape_signature": [
+                8,
+                60
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.010010408237576485,
+                0.008936040103435516,
+                0.009271898306906223,
+                0.01097111776471138,
+                0.0020349123515188694,
+                0.009009589441120625,
+                0.00815154891461134,
+                0.007105301134288311
+              ],
+              "zero_points": [
+                0
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "motion_model_b_1/hidden_1/MatMul;motion_model_b_1/hidden_1/Relu;motion_model_b_1/hidden_1/BiasAdd",
+              "index": 5,
+              "shape": [
+                1,
+                8
+              ],
+              "shape_signature": [
+                1,
+                8
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.010082370601594448
+              ],
+              "zero_points": [
+                -128
+              ],
+              "quantized_dimension": 0
+            },
+            {
+              "name": "StatefulPartitionedCall_1:0",
+              "index": 6,
+              "shape": [
+                1,
+                2
+              ],
+              "shape_signature": [
+                1,
+                2
+              ],
+              "dtype": "int8",
+              "scales": [
+                0.0462011881172657
+              ],
+              "zero_points": [
+                -29
+              ],
+              "quantized_dimension": 0
+            }
+          ]
+        },
+        "training_feature_min": -0.4410499930381775,
+        "training_feature_max": 0.36022499203681946,
+        "training_input_elements_clipped": 0,
+        "warning": "Calibration uses observed training range; stronger future movement may clip INT8 inputs"
+      },
+      "host_runtime": {
+        "training": {
+          "reference": {
+            "vectors": 168,
+            "output_elements": 336,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 168,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 168 vectors"
+          },
+          "esp_nn_ansi": {
+            "vectors": 168,
+            "output_elements": 336,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 168,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 168 vectors"
+          }
+        },
+        "independent": {
+          "reference": {
+            "vectors": 112,
+            "output_elements": 224,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 112,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 112 vectors"
+          },
+          "esp_nn_ansi": {
+            "vectors": 112,
+            "output_elements": 224,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 112,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 112 vectors"
+          }
+        },
+        "golden": {
+          "reference": {
+            "vectors": 4,
+            "output_elements": 8,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 4,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 4 vectors"
+          },
+          "esp_nn_ansi": {
+            "vectors": 4,
+            "output_elements": 8,
+            "different_output_elements": 0,
+            "maximum_output_difference_lsb": 0,
+            "classification_agreement_count": 4,
+            "classification_disagreement_indices": [],
+            "runner_stdout": "Production Engine completed 4 vectors"
+          }
+        }
+      }
+    }
+  },
+  "validation_source_sha256": {
+    "tools/ml_training/compare_models.py": "185f19a1651c2de6f4ad160a89e95f6e598e9cb941f96582a48ae004e2c39e92",
+    "tests/motion_host/model_file_runner.cc": "cd07bd957074adf22e0d7d339ac68baa05763c6f8a51a6bd36ec1b87a4eca7c9",
+    "tests/motion_host/CMakeLists.txt": "040642773129119406b95bbd44d7ae92fcbdebcd986630a78eb5e67c557c24f5",
+    "components/motion_ml/motion_engine.cc": "cbe4fcd0a869303a3c4423cbe6fbd7de8da949c3373bbf78df952ff99986ce8e"
+  },
+  "reproducibility": {
+    "weights_identical": true,
+    "byte_identical_files": [
+      "model_float32.tflite",
+      "model_int8.tflite",
+      "golden_vectors.json",
+      "test_vectors.npz",
+      "training_history.csv"
+    ],
+    "repeat_manifest_sha256": "67ab0f4ed397f8a88a0edfa68ca4e40bbf09ec8f5dbd2eb294e22b843bdc80e8",
+    "note": "Keras archive/manifest timestamps may differ; canonical weights and TFLite binaries match"
+  },
+  "parameter_reduction_percent": 49.9009900990099,
+  "int8_size_reduction_percent": 23.19587628865979
+}

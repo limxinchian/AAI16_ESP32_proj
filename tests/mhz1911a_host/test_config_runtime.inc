@@ -105,7 +105,7 @@ static void test_co2_controls(const char *scenario)
             assert(co2_starts[0] == 60000000);
             assert(co2_starts[1] == acks[ack_count-1].at_us + (burst ? 10000000 : 5000000));
             assert(acks[ack_count-1].state == SENSOR_UNINITIALIZED);
-            if (burst) assert(notify_busy > 0);
+            if (burst) assert(notify_busy + test_config_sidecar_busy > 0);
         }
         if (warmup) assert(co2_starts[0] == 60000000);
         if (near_warmup) assert(co2_starts[0] == acks[2].at_us + 5000000 && co2_starts[0] >= 63000000);

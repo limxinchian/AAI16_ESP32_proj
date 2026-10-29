@@ -1,4 +1,8 @@
 #include <assert.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
 #include <float.h>
 #include <setjmp.h>
 #include <stdlib.h>
@@ -6,6 +10,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "platform.h"
+#include "cJSON.h"
 #include "mqtt_manager_under_test.c"
 
 struct fake_queue { unsigned capacity, size, count; unsigned char *items; };
@@ -18,8 +23,16 @@ static bool returned_idle, model_event_outbox, disconnect_during_enqueue, ack_du
 static int outbox_queries;
 static int64_t outbox_query_delay_us;
 static int fail_step, step;
-static int last_qos;
-static char last_payload[LD2450_PAYLOAD_SIZE], last_topic[64];
+static int last_qos, last_payload_len;
+static esp_err_t queue_test_ack(void);
+static char last_payload[AAI16_FRAME_MAX + 1], last_topic[64];
+static unsigned model_received, model_disconnected;
+bool model_upload_start(uint32_t boot, model_upload_reply_fn callback)
+{ assert(boot == s_boot_id && callback == queue_model_reply); return true; }
+void model_upload_receive(const char *topic, size_t topic_length, const void *data,
+                          int length, int offset, int total, int id, bool retained)
+{ ++model_received; }
+void model_upload_disconnected(void) { ++model_disconnected; }
 static _Thread_local unsigned critical_depth;
 static pthread_mutex_t critical_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void (*publish_hook)(void);
@@ -118,9 +131,10 @@ int esp_mqtt_client_subscribe(esp_mqtt_client_handle_t c, const char *t, int q)
 int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t c, const char *t,
                            const char *d, int len, int qos, int retain, bool store)
 {
-    assert(!critical_depth && qos == 1 && store && !retain && len > 0 && len < TX_PAYLOAD_SIZE);
+    assert(!critical_depth && qos == 1 && store && !retain && len > 0 && len <= AAI16_FRAME_MAX);
+    assert(!strcmp(t, MODEL_ACK_TOPIC) || !strcmp(t, MODEL_STATUS_TOPIC) || len < TX_PAYLOAD_SIZE);
     enqueue_calls++;
-    memcpy(last_payload, d, len); last_payload[len] = 0;
+    memcpy(last_payload, d, len); last_payload[len] = 0; last_payload_len = len;
     snprintf(last_topic, sizeof(last_topic), "%s", t);
     last_qos = qos;
     clock_us += 20000; // Simulated SDK latency, not measured ESP32 performance.
@@ -134,7 +148,7 @@ int esp_mqtt_client_publish(esp_mqtt_client_handle_t c, const char *t,
     assert(!critical_depth && qos == 0 && !retain && len > 0 && len < (int)sizeof(last_payload));
     assert(!strcmp(t, LD2450_DATA_TOPIC) || len < TX_PAYLOAD_SIZE);
     publish_calls++;
-    memcpy(last_payload, d, len); last_payload[len] = 0;
+    memcpy(last_payload, d, len); last_payload[len] = 0; last_payload_len = len;
     snprintf(last_topic, sizeof(last_topic), "%s", t);
     last_qos = qos;
     clock_us += 20000;
@@ -151,7 +165,7 @@ int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t c)
     outbox_queries++; clock_us += outbox_query_delay_us;
     if (ack_during_query) {
         ack_during_query = false;
-        assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor=SENSOR_DHT22, .interval_ms=5000}) == ESP_OK);
+        assert(queue_test_ack() == ESP_OK);
     }
     return outbox_size;
 }
@@ -178,16 +192,8 @@ static void command(const char *payload, int len, int total, int offset, bool re
     };
     mqtt_event_handler(NULL, NULL, MQTT_EVENT_DATA, &e);
 }
-static void json_command(const char *s) { command(s, strlen(s), strlen(s), 0, false); }
-static void rejected(const char *s, const char *reason)
-{
-    json_command(s); pump();
-    assert(strstr(last_payload, "\"status\":\"rejected\""));
-    assert(strstr(last_payload, reason));
-    assert(last_qos == 1);
-    mqtt_config_update_t update;
-    assert(!mqtt_manager_take_config_update(&update));
-}
+#include "test_config_protocol.inc"
+#include "test_motion_protocol.inc"
 
 static void test_rfid_events(void)
 {
@@ -247,8 +253,7 @@ static void test_rfid_events(void)
 
     // Full event queues/budget cannot take any existing ACK/telemetry slot.
     calls = enqueue_calls;
-    mqtt_config_update_t ack = {.sensor = SENSOR_DHT22, .interval_ms = 5000};
-    assert(mqtt_manager_publish_config_ack(&ack) == ESP_OK);
+    assert(queue_test_ack() == ESP_OK);
     service_event_queue(); assert(enqueue_calls == calls); // ACK queued: defer event.
     uint32_t ack_accepted = s_stats[TX_CONFIG_ACK].enqueued;
     pump();
@@ -323,8 +328,39 @@ static void test_rfid_events(void)
 #include "test_mhz1911a.c"
 #include "test_mhz1911a_config.c"
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--motion-bridge")) {
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        clock_us = (INT64_C(1) << 54) + 5000123; // Exercise exact uint64 decoding.
+        motion_result_t r = motion_fixture(!strcmp(argv[2], "b"));
+        if (!strcmp(argv[2], "status")) { r.status = MOTION_INIT_FAILED; r.model_ready = false; }
+        check_motion_publish(&r);
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--config-bridge")) {
+#ifdef _WIN32
+        _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        uint8_t bytes[AAI16_CONFIG_FRAME_MAX + 1];
+        size_t n = fread(bytes, 1, sizeof(bytes), stdin);
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        command((char *)bytes, (int)n, (int)n, 0, false);
+        if (uxQueueMessagesWaiting(s_config_queue)) {
+            mqtt_config_update_t u = start_owner();
+            // Deterministic owner completion; physical owner scheduling is
+            // independently exercised in the sensor_host suite.
+            assert(mqtt_manager_publish_config_ack(&u) == ESP_OK);
+        }
+        pump();
+        if (!enqueue_calls) return 2;
+        fwrite(last_payload, 1, (size_t)last_payload_len, stdout);
+        return 0;
+    }
     // Failure injection at every allocating/registration/start/task-init step.
     for (int i = 1; i <= 8; i++) {
         fail_step = i; step = 0;
@@ -416,26 +452,12 @@ int main(void)
         assert(publish_calls == publications + 2 && outbox_size == occupancies[i]);
         assert(s_stats[TX_DHT22].outbox_full == 0 && s_stats[TX_GY511].outbox_full == 0);
     }
-    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}) == ESP_OK); pump();
-    assert(strstr(last_payload, "\"status\":\"applied\"") && last_qos == 1);
-    mqtt_config_update_t unavailable = {.sensor = SENSOR_DHT22, .interval_ms = 5000};
-    assert(mqtt_manager_reject_config(&unavailable, "sensor_unavailable") == ESP_OK); pump();
-    assert(!strcmp(last_topic, CONFIG_ACK_TOPIC) && last_qos == 1);
-    assert(strstr(last_payload, "\"sensor\":\"dht22\""));
-    assert(strstr(last_payload, "\"status\":\"rejected\""));
-    assert(strstr(last_payload, "\"reason\":\"sensor_unavailable\""));
-    assert(!strstr(last_payload, "applied") && strstr(last_payload, "\"interval_ms\":5000"));
-    unavailable = (mqtt_config_update_t){.sensor = SENSOR_GY511, .interval_ms = 1000};
-    assert(mqtt_manager_reject_config(&unavailable, "sensor_unavailable") == ESP_OK); pump();
-    assert(strstr(last_payload, "\"sensor\":\"gy511\"") && last_qos == 1);
-    assert(strstr(last_payload, "\"interval_ms\":1000"));
-    outbox_size = 0;
-    enqueue_result = -2;
-    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}) == ESP_OK); pump();
-    assert(s_stats[TX_CONFIG_ACK].outbox_full == 1);
-    enqueue_result = -1;
-    assert(mqtt_manager_publish_config_ack(&(mqtt_config_update_t){.sensor = SENSOR_DHT22, .interval_ms = 5000}) == ESP_OK); pump();
-    assert(s_stats[TX_CONFIG_ACK].enqueue_failed == 1);
+    test_config_protocol();
+    enqueue_result = -2; assert(queue_test_ack() == ESP_OK); pump();
+    assert(s_stats[TX_CONFIG_ACK].outbox_full >= 1);
+    enqueue_result = -1; assert(queue_test_ack() == ESP_OK); pump();
+    assert(s_stats[TX_CONFIG_ACK].enqueue_failed >= 1);
+    enqueue_result = 0;
     publish_result = -1;
     assert(mqtt_manager_publish_dht22(25, 50) == ESP_OK); pump();
     assert(s_stats[TX_DHT22].publish_failed == 1);
@@ -449,212 +471,14 @@ int main(void)
     event(MQTT_EVENT_PUBLISHED); event(MQTT_EVENT_DELETED);
     assert(s_qos1_pubacked == 1 && s_outbox_deleted == 1);
 
-    const unsigned valid[] = {2000, 5000, 10000};
-    for (unsigned i = 0; i < 3; i++) {
-        char payload[100]; mqtt_config_update_t update;
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"dht22\",\"interval_ms\":%u}", valid[i]);
-        json_command(payload);
-        assert(mqtt_manager_take_config_update(&update) && update.interval_ms == valid[i]);
-        assert(update.sensor == SENSOR_DHT22);
-    }
-    rejected("{", "invalid_json");
-    assert(strstr(last_payload, "\"sensor\":null"));
-    rejected("[]", "invalid_json");
-    rejected("{} trailing", "invalid_json");
-    rejected("{}", "missing_or_invalid_sensor");
-    rejected("{\"sensor\":\"future\",\"interval_ms\":5000}", "unsupported_sensor");
-    assert(strstr(last_payload, "\"sensor\":\"future\""));
-    // HC-SR04P is now supported; its parser/ACK coverage is in test_hcsr04p_config.
-    rejected("{\"sensor\":\"dht22\",\"interval_ms\":\"5000\"}", "missing_or_invalid_interval_ms");
-    rejected("{\"sensor\":\"dht22\",\"interval_ms\":1999}", "integer from 2000 to 10000");
-    rejected("{\"sensor\":\"dht22\",\"interval_ms\":10001}", "integer from 2000 to 10000");
-    rejected("{\"sensor\":\"dht22\",\"interval_ms\":2500.5}", "integer from 2000 to 10000");
-    rejected("{\"sensor\":\"dht22\",\"interval_ms\":1e999}", "integer from 2000 to 10000");
-    const char *valid_cmd = "{\"sensor\":\"dht22\",\"interval_ms\":5000}";
-    int len = strlen(valid_cmd), calls = enqueue_calls;
-    command(valid_cmd, len, len, 0, true); pump();
-    command(valid_cmd, len, len, 1, false); pump();
-    assert(enqueue_calls == calls); // Retained commands and continuations ignored.
-    command(valid_cmd, len - 1, len, 0, false); pump();
-    assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
-    const char embedded[] = "{}\0x";
-    command(embedded, sizeof(embedded) - 1, sizeof(embedded) - 1, 0, false); pump();
-    assert(strstr(last_payload, "invalid_json"));
-    char oversized[257]; memset(oversized, ' ', sizeof(oversized));
-    command(oversized, sizeof(oversized), sizeof(oversized), 0, false); pump();
-    assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
-    for (int i = 0; i < CONFIG_QUEUE_SIZE + 1; i++) json_command(valid_cmd);
-    pump(); assert(strstr(last_payload, "queue_full"));
-    for (int i = 0; i < CONFIG_QUEUE_SIZE; i++) {
-        mqtt_config_update_t update;
-        assert(mqtt_manager_take_config_update(&update) && update.interval_ms == 5000);
-        assert(update.sensor == SENSOR_DHT22);
-    }
-
-    // One parser and FIFO for both sensors; peeking must not consume or ACK.
-    const mqtt_config_update_t burst[] = {
-        {.sensor = SENSOR_GY511, .interval_ms = 1000}, {.sensor = SENSOR_DHT22, .interval_ms = 5000},
-        {.sensor = SENSOR_GY511, .interval_ms = 2000}, {.sensor = SENSOR_GY511, .interval_ms = 500}
-    };
-    uint32_t ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
-    for (unsigned i = 0; i < 4; ++i) {
-        char payload[100];
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"interval_ms\":%u}",
-                 burst[i].sensor == SENSOR_GY511 ? "gy511" : "dht22", burst[i].interval_ms);
-        json_command(payload);
-    }
-    assert(s_stats[TX_CONFIG_ACK].attempts == ack_attempts); // Queued is not applied.
-    json_command("{\"sensor\":\"gy511\",\"interval_ms\":10000}"); pump();
-    assert(strstr(last_payload, "queue_full") && strstr(last_payload, "\"sensor\":\"gy511\""));
-    assert(strstr(last_payload, "\"interval_ms\":10000"));
-    for (unsigned i = 0; i < 4; ++i) {
-        mqtt_config_update_t peek, update;
-        assert(mqtt_manager_peek_config_update(&peek));
-        assert(uxQueueMessagesWaiting(s_config_queue) == 4 - i);
-        assert(mqtt_manager_take_config_update(&update));
-        assert(peek.sensor == burst[i].sensor && peek.interval_ms == burst[i].interval_ms);
-        assert(update.sensor == peek.sensor && update.interval_ms == peek.interval_ms);
-        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
-        data = cJSON_Parse(last_payload);
-        assert(!strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring,
-                       update.sensor == SENSOR_GY511 ? "gy511" : "dht22"));
-        assert(cJSON_GetObjectItem(data, "interval_ms")->valueint == (int)update.interval_ms);
-        assert(last_qos == 1); cJSON_Delete(data);
-    }
-    const unsigned gy_valid[] = {100, 101, 499, 500, 501, 1000, 2000, 10000};
-    for (unsigned i = 0; i < sizeof(gy_valid) / sizeof(gy_valid[0]); ++i) {
-        char payload[100]; mqtt_config_update_t update;
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"gy511\",\"interval_ms\":%u}", gy_valid[i]);
-        json_command(payload);
-        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_GY511);
-        assert(update.interval_ms == gy_valid[i]);
-    }
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":99}", "integer from 100 to 10000");
-    assert(strstr(last_payload, "\"sensor\":\"gy511\"") && strstr(last_payload, "\"interval_ms\":99"));
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":10001}", "integer from 100 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":500.5}", "integer from 100 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":-1}", "integer from 100 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":0}", "integer from 100 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":true}", "missing_or_invalid_interval_ms");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":null}", "missing_or_invalid_interval_ms");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":1e999}", "integer from 100 to 10000");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":\"1000\"}", "missing_or_invalid_interval_ms");
-    rejected("{\"sensor\":\"gy511\"}", "missing_configuration_operation");
-    rejected("{\"sensor\":\"odd\\\"name\",\"interval_ms\":1000}", "unsupported_sensor");
-    data = cJSON_Parse(last_payload);
-    assert(data && !strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring, "odd\"name"));
-    cJSON_Delete(data);
-
-    // Strict Boolean operations share the same parser, FIFO and QoS 1 ACK path.
-    for (int sensor = SENSOR_DHT22; sensor <= SENSOR_LD2450; ++sensor) {
-        for (int enabled = 0; enabled <= 1; ++enabled) {
-            char payload[100]; mqtt_config_update_t update;
-            const char *name = sensor == SENSOR_DHT22 ? "dht22" : sensor == SENSOR_GY511 ? "gy511" : sensor == SENSOR_RC522 ? "rc522" : "ld2450";
-            snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"enabled\":%s}",
-                     name, enabled ? "true" : "false");
-            ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
-            json_command(payload);
-            assert(s_stats[TX_CONFIG_ACK].attempts == ack_attempts); // Not applied by the callback.
-            assert(mqtt_manager_take_config_update(&update));
-            assert(update.sensor == (sensor_id_t)sensor && update.operation == MQTT_CONFIG_ENABLED);
-            assert(update.enabled == (bool)enabled);
-            assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
-            snprintf(payload, sizeof(payload), "{\"sensor\":\"%s\",\"status\":\"applied\",\"enabled\":%s}",
-                     name, enabled ? "true" : "false");
-            assert(!strcmp(last_payload, payload) && last_qos == 1);
-            assert(mqtt_manager_reject_config(&update, "sensor_unavailable") == ESP_OK); pump();
-            data = cJSON_Parse(last_payload);
-            assert(cJSON_IsBool(cJSON_GetObjectItem(data, "enabled")));
-            assert(cJSON_IsTrue(cJSON_GetObjectItem(data, "enabled")) == enabled);
-            assert(!cJSON_GetObjectItem(data, "interval_ms"));
-            assert(!strcmp(cJSON_GetObjectItem(data, "reason")->valuestring, "sensor_unavailable"));
-            cJSON_Delete(data);
-        }
-    }
-    const char *bad_enabled[] = {"0", "1", "\"true\"", "null", "[]", "{}"};
-    for (unsigned i = 0; i < sizeof(bad_enabled) / sizeof(bad_enabled[0]); ++i) {
-        char payload[100];
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"gy511\",\"enabled\":%s}", bad_enabled[i]);
-        rejected(payload, "enabled must be a boolean");
-        assert(strstr(last_payload, "\"sensor\":\"gy511\""));
-    }
-    rejected("{\"enabled\":true}", "missing_or_invalid_sensor");
-    rejected("{\"sensor\":\"dht22\"}", "missing_configuration_operation");
-    rejected("{\"sensor\":\"future\",\"enabled\":false}", "unsupported_sensor");
-    assert(strstr(last_payload, "\"sensor\":\"future\"") && strstr(last_payload, "\"enabled\":false"));
-    // RC522 uses the same parser, FIFO and ACK serializer, with its own limits.
-    const unsigned rc_valid[] = {200, 201, 500, 1000, 2000};
-    for (unsigned i = 0; i < sizeof(rc_valid) / sizeof(rc_valid[0]); ++i) {
-        char payload[100]; mqtt_config_update_t update;
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"rc522\",\"interval_ms\":%u}", rc_valid[i]);
-        ack_attempts = s_stats[TX_CONFIG_ACK].attempts;
-        json_command(payload);
-        assert(s_stats[TX_CONFIG_ACK].attempts == ack_attempts); // Parsing/queueing is not application.
-        assert(mqtt_manager_take_config_update(&update) && update.sensor == SENSOR_RC522);
-        assert(update.operation == MQTT_CONFIG_INTERVAL && update.interval_ms == rc_valid[i]);
-        assert(mqtt_manager_publish_config_ack(&update) == ESP_OK); pump();
-        snprintf(payload, sizeof(payload), "{\"sensor\":\"rc522\",\"status\":\"applied\",\"interval_ms\":%u}", rc_valid[i]);
-        assert(!strcmp(last_payload, payload) && last_qos == 1);
-        assert(mqtt_manager_reject_config(&update, "sensor_disabled") == ESP_OK); pump();
-        assert(strstr(last_payload, "\"sensor\":\"rc522\"") && strstr(last_payload, "sensor_disabled"));
-    }
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":199}", "integer from 200 to 2000");
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":2001}", "integer from 200 to 2000");
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":500.5}", "integer from 200 to 2000");
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":-1}", "integer from 200 to 2000");
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":1e999}", "integer from 200 to 2000");
-    rejected("{\"sensor\":\"rc522\",\"interval_ms\":\"500\"}", "missing_or_invalid_interval_ms");
-    rejected("{\"sensor\":\"rc522\",\"enabled\":0}", "enabled must be a boolean");
-    rejected("{\"sensor\":\"rc522\",\"enabled\":false,\"interval_ms\":500}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"rc522\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"rc522\"}", "missing_configuration_operation");
-    rejected("{\"sensor\":\"gy511\",\"enabled\":false,\"interval_ms\":1000}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"dht22\",\"interval_ms\":2000,\"enabled\":null}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"gy511\",\"enabled\":true,\"enabled\":false}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"gy511\",\"interval_ms\":1000,\"interval_ms\":500}", "ambiguous_configuration");
-    rejected("{\"sensor\":\"gy511\",\"sensor\":\"dht22\",\"enabled\":false}", "missing_or_invalid_sensor");
-
-    const char *mixed_commands[] = {
-        "{\"sensor\":\"gy511\",\"enabled\":false}", "{\"sensor\":\"dht22\",\"interval_ms\":5000}",
-        "{\"sensor\":\"gy511\",\"enabled\":true}", "{\"sensor\":\"gy511\",\"interval_ms\":1000}"
-    };
-    for (unsigned i = 0; i < 4; ++i) json_command(mixed_commands[i]);
-    json_command("{\"sensor\":\"dht22\",\"enabled\":false}"); pump();
-    assert(strstr(last_payload, "queue_full") && strstr(last_payload, "\"sensor\":\"dht22\""));
-    assert(strstr(last_payload, "\"enabled\":false") && !strstr(last_payload, "interval_ms"));
-    for (unsigned i = 0; i < 4; ++i) {
-        mqtt_config_update_t update;
-        assert(mqtt_manager_take_config_update(&update));
-        assert(update.sensor == (i == 1 ? SENSOR_DHT22 : SENSOR_GY511));
-        assert(update.operation == (i % 2 ? MQTT_CONFIG_INTERVAL : MQTT_CONFIG_ENABLED));
-        if (i % 2) assert(update.interval_ms == (i == 1 ? 5000U : 1000U));
-        else assert(update.enabled == (i == 2));
-    }
-
-    // Enable/disable obeys the same retained policy.
-    valid_cmd = "{\"sensor\":\"gy511\",\"enabled\":false}";
-    len = strlen(valid_cmd); calls = enqueue_calls;
-    command(valid_cmd, len, len, 0, true); pump();
-    mqtt_config_update_t ignored;
-    assert(enqueue_calls == calls && !mqtt_manager_take_config_update(&ignored));
-
-    // GY-511 obeys the existing retained/fragmented-input policy too.
-    valid_cmd = "{\"sensor\":\"gy511\",\"interval_ms\":1000}";
-    len = strlen(valid_cmd); calls = enqueue_calls;
-    command(valid_cmd, len, len, 0, true); pump();
-    command(valid_cmd, len, len, 1, false); pump();
-    assert(enqueue_calls == calls);
-    command(valid_cmd, len - 1, len, 0, false); pump();
-    assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
-    assert(strstr(last_payload, "\"sensor\":null"));
     test_rfid_events();
 
     // A disable ACK does not retract earlier presentations from the event FIFO.
     const uint8_t card[] = {0x5a, 0x2d, 0xfd, 3};
     assert(mqtt_manager_publish_rc522_event(card, sizeof(card)) == ESP_OK);
-    json_command("{\"sensor\":\"rc522\",\"enabled\":false}");
-    mqtt_config_update_t disable;
-    assert(mqtt_manager_take_config_update(&disable) && disable.sensor == SENSOR_RC522 && !disable.enabled);
+    aai16_Envelope disable_frame = config_frame(SENSOR_RC522, true, 0);
+    send_frame(&disable_frame);
+    mqtt_config_update_t disable = start_owner();
     assert(mqtt_manager_publish_config_ack(&disable) == ESP_OK);
     assert(uxQueueMessagesWaiting(s_event_queue) == 1);
     uint32_t events_enqueued = s_stats[TX_RC522_EVENT].enqueued;
@@ -663,24 +487,12 @@ int main(void)
     assert(!strcmp(last_topic, RC522_EVENT_TOPIC));
     assert(!uxQueueMessagesWaiting(s_event_queue));
 
-    // RC522 obeys retained/fragmented command policy, including while events are enabled.
-    valid_cmd = "{\"sensor\":\"rc522\",\"enabled\":true}";
-    len = strlen(valid_cmd); calls = enqueue_calls;
-    command(valid_cmd, len, len, 0, true); pump();
-    command(valid_cmd, len, len, 1, false); pump();
-    assert(enqueue_calls == calls && !mqtt_manager_take_config_update(&disable));
-    command(valid_cmd, len - 1, len, 0, false); pump();
-    assert(strstr(last_payload, "invalid_payload_size_or_fragmented"));
     test_radar_telemetry();
     test_radar_config();
     test_hcsr04p_telemetry();
     test_hcsr04p_config();
     test_mhz1911a_telemetry();
     test_mhz1911a_config();
-    // The new GY-511 floor must not relax any unrelated sensor's limits.
-    rejected("{\"sensor\":\"bme280\",\"interval_ms\":499}", "integer from 500 to 10000");
-    rejected("{\"sensor\":\"max6675\",\"interval_ms\":249}", "integer from 250 to 10000");
-    rejected("{\"sensor\":\"ld2450\",\"interval_ms\":499}", "integer from 500 to 10000");
     assert(mqtt_manager_publish_bme280(25, 1013.25f, 50, true) == ESP_OK); pump();
     assert(!strcmp(last_topic, BME280_DATA_TOPIC) && last_qos == 0);
     data = cJSON_Parse(last_payload);
@@ -691,50 +503,36 @@ int main(void)
     data = cJSON_Parse(last_payload);
     assert(data && cJSON_GetObjectItem(data, "temperature_c")->valuedouble == 123.25);
     cJSON_Delete(data);
-    motion_result_t motion = {
-        .model_version = "aai16-motion-model-a-0.1.0", .status = MOTION_PREDICTION,
-        .model_ready = true, .class_id = 1, .boot_id = mqtt_manager_boot_id(),
-        .first_sequence = 11, .last_sequence = 30, .generation = 2,
-        .interval_ms = 100, .uptime_us = clock_us, .inference_us = 123,
-        .clipped = 3,
-    };
-    int before_ml_publish = publish_calls;
-    assert(mqtt_manager_publish_motion(&motion) == ESP_OK);
-    assert(publish_calls == before_ml_publish); // No network calls on ML task.
-    pump();
-    assert(!strcmp(last_topic, MOTION_DATA_TOPIC) && last_qos == 0);
-    data = cJSON_Parse(last_payload);
-    assert(data && !strcmp(cJSON_GetObjectItem(data, "state")->valuestring, "MOVING"));
-    assert(cJSON_GetObjectItem(data, "first")->valueint == 11);
-    assert(cJSON_GetObjectItem(data, "last")->valueint == 30);
-    assert(cJSON_GetObjectItem(data, "inference_us")->valueint == 123);
-    assert(!cJSON_GetObjectItem(data, "probability"));
-    cJSON_Delete(data);
-    motion.status = MOTION_WAIT_100MS; motion.interval_ms = 500; motion.uptime_us = clock_us;
-    assert(mqtt_manager_publish_motion(&motion) == ESP_OK); pump();
-    assert(strstr(last_payload, "requires_100ms") && strstr(last_payload, "UNKNOWN"));
-    motion.status = MOTION_PREDICTION; motion.class_id = 2;
-    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_INVALID_ARG);
-    assert(mqtt_manager_publish_motion(NULL) == ESP_ERR_INVALID_ARG);
-    motion.class_id = 0;
-    strcpy(motion.model_version, "invalid\"version");
-    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_INVALID_ARG);
-    strcpy(motion.model_version, "aai16-motion-model-a-0.1.0");
-    motion.uptime_us = clock_us;
-    event(MQTT_EVENT_DISCONNECTED);
-    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_INVALID_STATE);
-    event(MQTT_EVENT_CONNECTED);
-    pump();
-    // The shared bound is unchanged; newest ML data drops on backpressure.
-    motion.uptime_us = clock_us;
-    for (unsigned i = 0; i < TX_QUEUE_SIZE; ++i) assert(mqtt_manager_publish_motion(&motion) == ESP_OK);
-    assert(mqtt_manager_publish_motion(&motion) == ESP_ERR_NO_MEM);
-    pump();
-    puts("PASS: ML result topic, bounded JSON adapter, unavailable status, invalid inputs, offline and queue-full drops");
+    test_motion_telemetry();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];
         assert(s->attempts == s->enqueued + s->publish_ok + s->offline + s->queue_full +
                s->invalid + s->stale + s->outbox_full + s->enqueue_failed + s->publish_failed + s->cancelled);
+    }
+    {
+        uint8_t reply[768] = {1, 0, 255};
+        model_event_outbox = false;
+        int calls = enqueue_calls;
+        assert(!queue_model_reply(false, reply, 769));
+        for (int i = 0; i < 4; ++i) assert(queue_model_reply(i == 0, reply, sizeof(reply)));
+        assert(!queue_model_reply(false, reply, 1));
+        assert(enqueue_calls == calls); // No SDK call on the upload worker.
+        outbox_size = 300; service_model_replies(); assert(enqueue_calls == calls);
+        event(MQTT_EVENT_DISCONNECTED); outbox_size = 0;
+        service_model_replies(); assert(enqueue_calls == calls);
+        event(MQTT_EVENT_CONNECTED); enqueue_result = -1;
+        service_model_replies(); assert(s_model_reply_count == 4);
+        enqueue_result = 1; service_model_replies();
+        assert(!strcmp(last_topic, MODEL_STATUS_TOPIC) && last_payload_len == 768 && !memcmp(reply, last_payload, 768));
+        assert(s_model_reply_count == 3);
+        while (s_model_reply_count) service_model_replies();
+        assert(!strcmp(last_topic, MODEL_ACK_TOPIC));
+        unsigned received = model_received;
+        esp_mqtt_event_t e = {.topic=MODEL_CHUNK_TOPIC, .topic_len=strlen(MODEL_CHUNK_TOPIC),
+            .data=(char *)reply, .data_len=10, .total_data_len=10};
+        mqtt_event_handler(NULL,NULL,MQTT_EVENT_DATA,&e);
+        assert(model_received == received + 1 && model_disconnected > 0);
+        puts("PASS: model routing, bounded reply mailbox, QoS1 binary ACK/status, reconnect and configuration outbox reserve");
     }
     puts("PASS: init cleanup, bounded handoff, sequence/JSON, drop accounting, ACKs, configuration validation");
     return 0;

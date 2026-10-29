@@ -1,0 +1,70 @@
+cmake_minimum_required(VERSION 3.20)
+project(motion_host C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_C_STANDARD 11)
+get_filename_component(repo "../.." ABSOLUTE)
+set(runtime "${repo}/managed_components/espressif__esp-tflite-micro")
+set(nn "${repo}/managed_components/espressif__esp-nn")
+set(lite "${runtime}/tensorflow/lite")
+set(micro "${lite}/micro")
+set(ml "${repo}/components/motion_ml")
+set(mbed "${IDF_PATH}/components/mbedtls/mbedtls")
+execute_process(COMMAND "${PYTHON}" "${repo}/tools/ml_inference/generate_bundle.py"
+    --model-dir "${repo}/models/motion_model_a" --output "${CMAKE_CURRENT_BINARY_DIR}/model_a_bundle.h"
+    COMMAND_ERROR_IS_FATAL ANY)
+include_directories("${runtime}" "${runtime}/third_party/gemmlowp"
+    "${runtime}/third_party/flatbuffers/include" "${runtime}/third_party/ruy"
+    "${ml}" "${ml}/include" "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+    "${CMAKE_CURRENT_BINARY_DIR}" "${mbed}/include" "${nn}/include" "${nn}/src/common")
+add_compile_definitions(TF_LITE_STATIC_MEMORY TF_LITE_DISABLE_X86_NEON MBEDTLS_CONFIG_FILE="host_mbedtls.h")
+add_compile_options(-O2 -ffunction-sections -fdata-sections -fno-fast-math -ffp-contract=off -UNDEBUG)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+file(GLOB bridges "${micro}/tflite_bridge/*.cc")
+set(runtime_sources ${bridges})
+foreach(name debug_log flatbuffer_utils memory_helpers micro_allocation_info micro_allocator
+    micro_context micro_interpreter_context micro_interpreter_graph micro_interpreter micro_log
+    micro_op_resolver micro_profiler micro_resource_variable micro_utils system_setup)
+    list(APPEND runtime_sources "${micro}/${name}.cc")
+endforeach()
+list(APPEND runtime_sources "${micro}/esp/micro_time.cc")
+foreach(name non_persistent_arena_buffer_allocator persistent_arena_buffer_allocator single_arena_buffer_allocator)
+    list(APPEND runtime_sources "${micro}/arena_allocator/${name}.cc")
+endforeach()
+list(APPEND runtime_sources
+    "${micro}/memory_planner/greedy_memory_planner.cc" "${micro}/memory_planner/linear_memory_planner.cc"
+    "${micro}/kernels/kernel_util.cc" "${micro}/kernels/fully_connected_common.cc"
+    "${lite}/kernels/kernel_util.cc" "${lite}/core/c/common.cc"
+    "${lite}/core/api/flatbuffer_conversions.cc" "${lite}/core/api/tensor_utils.cc"
+    "${lite}/kernels/internal/common.cc" "${lite}/kernels/internal/quantization_util.cc"
+    "${lite}/kernels/internal/portable_tensor_utils.cc" "${lite}/kernels/internal/tensor_utils.cc"
+    "${lite}/kernels/internal/tensor_ctypes.cc" "${lite}/kernels/internal/reference/portable_tensor_utils.cc"
+    "${runtime}/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
+    "${runtime}/tensorflow/compiler/mlir/lite/schema/schema_utils.cc"
+    "${mbed}/library/sha256.c" "${mbed}/library/platform_util.c" "${mbed}/library/platform.c"
+    "${ml}/motion_core.c" "${ml}/motion_engine.cc" "${ml}/model_source.cc")
+add_library(host_runtime STATIC ${runtime_sources})
+foreach(backend reference esp_nn_ansi)
+    add_executable(test_${backend} test_engine.cc "${micro}/kernels/esp_nn/fully_connected.cc")
+    if(backend STREQUAL "esp_nn_ansi")
+        target_compile_definitions(test_${backend} PRIVATE ESP_NN=1)
+        target_sources(test_${backend} PRIVATE "${nn}/src/fully_connected/esp_nn_fully_connected_ansi.c")
+    endif()
+    target_link_libraries(test_${backend} PRIVATE host_runtime)
+    target_link_options(test_${backend} PRIVATE -Wl,--gc-sections)
+    add_executable(model_${backend} model_file_runner.cc "${micro}/kernels/esp_nn/fully_connected.cc")
+    if(backend STREQUAL "esp_nn_ansi")
+        target_compile_definitions(model_${backend} PRIVATE ESP_NN=1)
+        target_sources(model_${backend} PRIVATE "${nn}/src/fully_connected/esp_nn_fully_connected_ansi.c")
+    endif()
+    target_link_libraries(model_${backend} PRIVATE host_runtime)
+    target_link_options(model_${backend} PRIVATE -Wl,--gc-sections)
+endforeach()
+add_executable(test_core test_core.c "${ml}/motion_core.c")
+add_library(core_python SHARED "${ml}/motion_core.c")
+set_target_properties(core_python PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+file(READ "${ml}/motion_ml.cc" worker_source)
+string(REPLACE "#include \"motion_engine.h\"" "#include \"fake_engine.h\"" worker_source "${worker_source}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/motion_worker_under_test.cc" "${worker_source}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ml}/motion_ml.cc")
+add_executable(test_worker test_worker.cc "${ml}/motion_core.c")
+target_include_directories(test_worker BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/worker_platform")

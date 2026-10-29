@@ -1,4 +1,4 @@
-"""Train preliminary Model A on the three fixed Phase 1 sessions only."""
+"""Train Model A or lightweight Model B on the three fixed Phase 1 sessions only."""
 from __future__ import annotations
 
 import argparse
@@ -16,11 +16,52 @@ import tempfile
 import numpy as np
 
 from data import LABELS, TRAIN_FILES, load_dataset, sha256
+from evaluate import verify_artifacts
 from runtime import (build_model, comparison, export_models, fit_rms_baseline, metrics,
                      tensorflow, weights_sha256, write_json)
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "aai16-motion-model-a-0.1.0"
+
+def build_model_b(tf, learning_rate=0.001):
+    # Keep runtime.py byte-identical: its hash is part of frozen Model A.
+    model = tf.keras.Sequential([
+        tf.keras.Input(shape=(60,), dtype=tf.float32, name="features"),
+        tf.keras.layers.Dense(8, activation="relu", name="hidden"),
+        tf.keras.layers.Dense(2, activation=None, name="logits"),
+    ], name="motion_model_b")
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+                  loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                  metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")],
+                  jit_compile=False)
+    assert model.count_params() == 506
+    return model
+
+
+def load_training_dataset(args):
+    # Explicit allowlist for BOTH training and representative INT8 calibration.
+    # Phase 4A additionally pins the bytes and settings to Model A's provenance.
+    reference = None
+    if args.model == "b":
+        reference_dir = ROOT / "models/motion_model_a"
+        reference = verify_artifacts(reference_dir)
+        expected = {item["file"]: item["sha256"] for item in reference["dataset"]["sessions"]}
+        if set(expected) != set(TRAIN_FILES):
+            raise ValueError("Model A training filenames differ from the fixed allowlist")
+        for name in TRAIN_FILES:
+            if sha256(args.data_dir / name) != expected[name]:
+                raise ValueError(f"Training recording differs from Model A: {name}")
+        for name in ("data.py", "runtime.py"):
+            if sha256(Path(__file__).parent / name) != reference["source_sha256"][name]:
+                raise ValueError(f"{name} differs from frozen Model A")
+        if input_contract() != json.loads((reference_dir / "input_contract.json").read_text(encoding="utf-8")):
+            raise ValueError("Input contract differs from Model A")
+        for name in ("seed", "epochs", "batch_size", "learning_rate"):
+            if getattr(args, name) != reference["training"][name]:
+                raise ValueError(f"Phase 4A fixes {name} to Model A's setting")
+    dataset = load_dataset([args.data_dir / name for name in TRAIN_FILES])
+    if reference is not None and dataset.report() != reference["dataset"]:
+        raise ValueError("Training windows differ from Model A")
+    return dataset
 
 
 def input_contract():
@@ -49,14 +90,16 @@ def train(args):
         raise FileExistsError(f"Refusing to overwrite {output}; use a new --output-dir")
     # Deliberately no glob or --include option: reserved future evaluation files
     # cannot silently enter training, threshold fitting, or INT8 calibration.
-    dataset = load_dataset([args.data_dir / name for name in TRAIN_FILES])
+    dataset = load_training_dataset(args)
     if set(dataset.y.tolist()) != {0, 1}:
         raise ValueError("Training needs both REST and MOVING")
     print(json.dumps(dataset.report(), indent=2), flush=True)
     tf = tensorflow(args.seed)
     tf.keras.backend.clear_session()
     tf.keras.utils.set_random_seed(args.seed)
-    model = build_model(tf, args.learning_rate)
+    model = (build_model_b if args.model == "b" else build_model)(tf, args.learning_rate)
+    version = f"aai16-motion-model-{args.model}-0.1.0"
+    hidden = 8 if args.model == "b" else 16
     counts = np.bincount(dataset.y, minlength=2)
     weights = len(dataset.y) / (2.0 * counts)
     sample_weights = weights[dataset.y].astype(np.float32)
@@ -69,7 +112,8 @@ def train(args):
                 "validation_split": None, "early_stopping": False, "checkpoint_selection": "fixed final epoch",
                 "deterministic_ops": True, "cpu_only": True, "oneDNN": False,
                 "inter_op_threads": 1, "intra_op_threads": 1,
-                "architecture": "60 -> Dense(16, ReLU) -> Dense(2, linear logits)", "parameters": 1010}
+                "architecture": f"60 -> Dense({hidden}, ReLU) -> Dense(2, linear logits)",
+                "parameters": model.count_params()}
     generator = np.random.default_rng(args.seed)
     history = []
     for epoch in range(1, args.epochs + 1):
@@ -90,7 +134,7 @@ def train(args):
     logits = model(dataset.x, training=False).numpy()
     baseline = fit_rms_baseline(dataset.rms, dataset.y)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".motion-a-", dir=output.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix=f".motion-{args.model}-", dir=output.parent) as temporary:
         artifacts = Path(temporary)
         float_model, int_model = export_models(tf, model, dataset.x, artifacts)
         float_logits, _, _, _ = float_model.predict(dataset.x)
@@ -118,26 +162,28 @@ def train(args):
                    "keras_vs_tflite_int8": comparison(logits, int_logits)}
         write_json(artifacts / "training_report.json", summary)
         (artifacts / "MODEL_CARD.md").write_text(
-            f"# Preliminary motion Model A\n\nVersion: `{VERSION}`.\n\n"
+            f"# Motion Model {args.model.upper()}\n\nVersion: `{version}`.\n\n"
             "Scope: flat stationary desk REST (0) versus continuous hand movement/shaking MOVING (1).\n\n"
             f"Trained on {len(dataset.y)} real windows: {int(counts[0])} REST and {int(counts[1])} MOVING, "
-            "from one REST and two MOVING sessions. No independent test data is available yet. "
+            "from one REST and two MOVING sessions. Held-out data is never read by training or calibration. "
             "All following scores are training-set resubstitution; overlapping windows are correlated. "
             "These scores do not establish generalization or project accuracy compliance.\n\n"
             f"Keras accuracy: {summary['keras']['accuracy']:.6f}; "
             f"INT8 accuracy: {summary['tflite_int8']['accuracy']:.6f}; "
             f"RMS baseline accuracy: {summary['rms_baseline']['accuracy']:.6f}.\n\n"
-            "Architecture: 60 -> Dense(16, ReLU) -> Dense(2, logits), 1,010 parameters. "
+            f"Architecture: 60 -> Dense({hidden}, ReLU) -> Dense(2, logits), {model.count_params():,} parameters. "
             f"Adam, learning rate {args.learning_rate}, {args.epochs} epochs, batch {args.batch_size}, "
             f"seed {args.seed}, inverse-frequency class weights. Final epoch; no validation/tuning split.\n\n"
             "See input_contract.json for the chronological float32 per-axis mean, clamp +/-2g, /2, "
             "sample-major contract. See quantization.json for actual tensor scales/zero points and operators. "
             "Calibration uses training windows only; new movement can exceed its observed range.\n\n"
-            "Freeze this bundle before collecting rest_orientation_02.csv and moving_directions_03.csv. "
+            "Freeze this bundle before evaluating rest_orientation_02.csv (the correctly recorded retry) "
+            "and moving_directions_03.csv. "
             "Run tools/ml_training/evaluate.py in its default independent mode, without retraining, "
             "threshold tuning, or recalibration. Keep the first evaluation result.\n\n"
-            "This bundle has only been exercised on the laptop. Tensor arena size, target operator "
-            "compatibility, latency, and firmware inference remain unverified. "
+            "This bundle has only been exercised on the laptop. Hardware tensor arena size, "
+            "latency, and firmware inference remain unverified. Host runtime compatibility results "
+            "and independent scores belong in a separate report after this bundle is frozen. "
             "See tools/ml_training/README.md for reproduction, results, and deployment requirements.\n",
             encoding="utf-8")
         with (artifacts / "training_history.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -168,7 +214,7 @@ def train(args):
         freeze = subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True)
         (artifacts / "environment.lock.txt").write_text(freeze, encoding="utf-8")
         source_files = ("data.py", "runtime.py", "train.py", "evaluate.py", "requirements.txt", "setup_env.py")
-        manifest = {"model_version": VERSION, "created_utc": datetime.now(timezone.utc).isoformat(),
+        manifest = {"model_version": version, "created_utc": datetime.now(timezone.utc).isoformat(),
                     "git_branch": subprocess.check_output(["git", "branch", "--show-current"], cwd=ROOT, text=True).strip(),
                     "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                     "git_working_tree": "uncommitted implementation; source hashes identify training code",
@@ -187,12 +233,15 @@ def train(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=ROOT / "tools/ml_data_collection/recordings")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "models/motion_model_a")
+    parser.add_argument("--model", choices=("a", "b"), default="a")
+    parser.add_argument("--output-dir", type=Path, help="Default: models/motion_model_<a|b>; must not exist")
     parser.add_argument("--seed", type=int, default=20261028)
     parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     args = parser.parse_args(argv)
+    if args.output_dir is None:
+        args.output_dir = ROOT / f"models/motion_model_{args.model}"
     try:
         train(args)
     except (OSError, ValueError, RuntimeError) as exc:
