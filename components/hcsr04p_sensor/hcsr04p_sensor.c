@@ -167,6 +167,26 @@ static esp_err_t decode_echo(uint32_t ticks, uint32_t hz, hcsr04p_reading_t *out
     return ESP_OK;
 }
 
+// Why reads are rejected, for bring-up. Touched only by the single reader task, never from
+// the ISR or inside a critical section. A summary is logged at most every 10 s, and only
+// after a failure, so a healthy sensor logs nothing.
+typedef enum { DIAG_ECHO_HIGH, DIAG_BAD_EDGE, DIAG_OUT_OF_RANGE, DIAG_TIMEOUT, DIAG_CAUSES } diag_cause_t;
+static struct { uint32_t count[DIAG_CAUSES]; float last_bad_pulse_us; int64_t next_log_us; } s_diag;
+
+static void diag_record(diag_cause_t cause, float pulse_us)
+{
+    ++s_diag.count[cause];
+    if (cause == DIAG_OUT_OF_RANGE) s_diag.last_bad_pulse_us = pulse_us;
+    int64_t now = esp_timer_get_time();
+    if (now < s_diag.next_log_us) return;
+    s_diag.next_log_us = now + 10000000LL;
+    ESP_LOGW("SENSOR", "hcsr04p | ERROR | rejected_reads: echo_high_at_rest=%lu bad_edge=%lu pulse_out_of_range=%lu "
+             "timeout=%lu last_bad_pulse_us=%.1f echo_pin_now=%d",
+             (unsigned long)s_diag.count[DIAG_ECHO_HIGH], (unsigned long)s_diag.count[DIAG_BAD_EDGE],
+             (unsigned long)s_diag.count[DIAG_OUT_OF_RANGE], (unsigned long)s_diag.count[DIAG_TIMEOUT],
+             s_diag.last_bad_pulse_us, gpio_get_level(HCSR04P_ECHO_GPIO));
+}
+
 esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
@@ -185,6 +205,7 @@ esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out)
     // A stuck-high pin cannot be the beginning of a new echo pulse.
     if (gpio_get_level(HCSR04P_ECHO_GPIO)) {
         portEXIT_CRITICAL(&s_lock);
+        diag_record(DIAG_ECHO_HIGH, 0);
         return ESP_ERR_INVALID_RESPONSE;
     }
     s_last_trigger_us = started;
@@ -207,7 +228,18 @@ esp_err_t hcsr04p_sensor_read(hcsr04p_reading_t *out)
     portENTER_CRITICAL(&s_lock);
     s_armed = false;
     portEXIT_CRITICAL(&s_lock);
-    if (received != pdTRUE) return ESP_ERR_TIMEOUT;
-    if (event.error != ESP_OK) return event.error;
-    return decode_echo(event.ticks, s_resolution_hz, out);
+    if (received != pdTRUE) {
+        diag_record(DIAG_TIMEOUT, 0);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (event.error != ESP_OK) {
+        diag_record(event.error == ESP_ERR_TIMEOUT ? DIAG_TIMEOUT : DIAG_BAD_EDGE, 0);
+        return event.error;
+    }
+    esp_err_t err = decode_echo(event.ticks, s_resolution_hz, out);
+    if (err != ESP_OK) {
+        diag_record(DIAG_OUT_OF_RANGE,
+                    s_resolution_hz ? (float)((double)event.ticks * 1000000.0 / s_resolution_hz) : 0.0f);
+    }
+    return err;
 }
