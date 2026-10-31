@@ -6,11 +6,9 @@ Second sensor-telemetry migration (after [RC522](protobuf_rc522_telemetry.md)).
 removed from the firmware. Existing JSON-only subscribers of this topic must use the schema decoder.
 
 **Status.** Host tests pass (C encoder, C decoder, independent Python decoder) and the full
-firmware image builds for ESP32-S3 on ESP-IDF 6.1 (0x11cdf0 bytes, 72% of the app partition free).
-**Not verified on hardware:** at the time of writing the sensor on the project board returned
-`ESP_ERR_INVALID_RESPONSE` on every read (its ECHO input read high before each trigger, so reads end in
-about 0.1 ms and no sample is ever handed to MQTT). No HC-SR04P message has been produced on a real
-board yet. See [Hardware status](#hardware-status).
+firmware image builds for ESP32-S3 on ESP-IDF 6.1. The sensor now reads on the project board after a
+wiring fix (see [Hardware status](#hardware-status)). **Not yet recorded:** a captured and decoded
+HC-SR04P message from the board; only the host-side decode (C bytes read by Python) is verified.
 
 ## Wire contract
 
@@ -94,21 +92,21 @@ acquisition-time generation.
 
 ## Hardware status
 
-Open item: **the ultrasonic module does not currently produce readings on the board**, so this change has
-only been verified on the host. The firmware reports it as `DEGRADED` with `invalid_total` equal to
-`failed_total` and `timeouts_total=0`. In `components/hcsr04p_sensor/hcsr04p_sensor.c` a read is rejected
-immediately if ECHO (GPIO5) is already high before the trigger pulse, and a timeout would instead take
-about 30 ms. The log shows `max_read` of 0.05 to 1.3 ms, so ECHO reads high at rest. The pin has an
-internal pull-down on ESP-IDF 6 (set with `gpio_set_pull_mode`), so an unconnected ECHO would read low and
-time out, which points at the module or its wiring driving ECHO high: for example a plain HC-SR04 (a 5 V
-part) run at 3.3 V, ECHO or TRIG on the wrong pin, or missing supply or ground. Verify by unplugging the
-ECHO wire: if the counters change from `invalid` to `timeouts`, the module is driving ECHO.
+Root cause of the earlier failure: the module was wired to GPIO14 and GPIO15, but the firmware drives
+**TRIG on GPIO4 and ECHO on GPIO5**. Those two pins were also taken by other sensors (GPIO14 is the
+RC522 chip select, GPIO15 is the MH-Z19 UART TX). Until moved, every read was rejected as
+`ESP_ERR_INVALID_RESPONSE`, quickly (`max_read` 0.05 to 1.3 ms, `timeouts_total=0`). After the wires were
+moved to GPIO4/GPIO5 the sensor was reported working. That report is from the project owner's serial
+observation; this document does not record the readings.
 
-When it reads, verify as for the RFID: confirm the serial health line shows `ok_total` rising, then
-subscribe to `aai16/sensors/hcsr04p/data` on the Protobuf MQTTX connection (decoder applied to Received,
-proto name `aai16.Envelope`) and compare `distance_cm` with a tape measure. In MQTTX the float32 values
-appear with their binary-float digits (for example 42.1 shows as 42.099998474121094) and the 64-bit times
-as strings.
+To make failures diagnosable, the driver now logs a rate-limited summary after rejected reads
+(`hcsr04p | ERROR | rejected_reads: echo_high_at_rest=... bad_edge=... pulse_out_of_range=...
+timeout=... last_bad_pulse_us=... echo_pin_now=...`, at most every 10 s, only after a failure).
+
+Still to record, with the board powered: the serial `hcsr04p | HEALTH` line showing `ok_total` rising,
+a decoded message on `aai16/sensors/hcsr04p/data` in MQTTX or with `mosquitto_sub`, and `distance_cm`
+compared with a tape measure. In MQTTX the float32 values appear with their binary-float digits (for
+example 42.1 shows as 42.099998474121094) and the 64-bit times as strings.
 
 ## Reading the messages
 
