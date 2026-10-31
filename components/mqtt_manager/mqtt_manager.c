@@ -52,7 +52,8 @@ _Static_assert(2 + 5 + 5 + 2 + 2 + aai16_MlPrediction_size < TX_PAYLOAD_SIZE,
 #define TELEMETRY_MAX_AGE_MS 2000
 // Three targets need more than the shared 320-byte queue payload. Keep that
 // queue unchanged: serialize a single radar mailbox only in the publisher.
-#define LD2450_PAYLOAD_SIZE 512
+#define LD2450_PAYLOAD_SIZE 192
+_Static_assert(36 + aai16_SensorTelemetry_size <= LD2450_PAYLOAD_SIZE, "Radar telemetry exceeds its payload buffer");
 #define LD2450_DEFAULT_INTERVAL_MS 1000
 #define LD2450_MAX_AGE_US 2000000LL
 #define HCSR04P_PAYLOAD_SIZE 160
@@ -178,6 +179,7 @@ static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct {
     ld2450_report_t report;
     int64_t received_us;
+    uint32_t generation; // Configuration generation when the report was handed over.
     bool pending;
 } s_radar;
 static uint32_t s_radar_updates, s_radar_coalesced, s_radar_invalid, s_radar_deferred;
@@ -324,18 +326,34 @@ static void service_event_queue(void)
     update_outbox_snapshot();
 }
 
+// The LD2450 parser yields sign/magnitude values, so every axis is within +-32767, and an
+// unused slot is all zero. Anything else cannot be represented by the wire contract.
+static bool radar_report_valid(const ld2450_report_t *report)
+{
+    unsigned count = 0;
+    for (unsigned i = 0; i < LD2450_TARGETS; ++i) {
+        const ld2450_target_t *t = &report->targets[i];
+        count += t->present;
+        if (t->x_mm < -32767 || t->y_mm < -32767 || t->speed_cm_s < -32767) return false;
+        if (!t->present && (t->x_mm || t->y_mm || t->speed_cm_s || t->resolution_mm)) return false;
+    }
+    return report->count == count;
+}
+
 esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
                                              int64_t received_us)
 {
-    unsigned count = 0;
-    if (report != NULL) {
-        for (unsigned i = 0; i < LD2450_TARGETS; ++i) count += report->targets[i].present;
-    }
-    if (report == NULL || report->count != count || received_us < 0 ||
+    if (report == NULL || !radar_report_valid(report) || received_us < 0 ||
         received_us > esp_timer_get_time()) {
         count_event(&s_radar_invalid);
         return ESP_ERR_INVALID_ARG;
     }
+    // A report keeps the generation it was acquired under, even if publication is
+    // delayed. Separate short critical section: never nested with s_stats_lock.
+    uint32_t generation;
+    portENTER_CRITICAL(&s_config_lock);
+    generation = s_transactions.generation[SENSOR_LD2450];
+    portEXIT_CRITICAL(&s_config_lock);
     portENTER_CRITICAL(&s_stats_lock);
     if (!s_radar_enabled) {
         portEXIT_CRITICAL(&s_stats_lock);
@@ -345,6 +363,7 @@ esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
     if (s_radar.pending) ++s_radar_coalesced;
     s_radar.report = *report;
     s_radar.received_us = received_us;
+    s_radar.generation = generation;
     s_radar.pending = true;
     portEXIT_CRITICAL(&s_stats_lock);
     return ESP_OK;
@@ -379,31 +398,44 @@ esp_err_t mqtt_manager_commit_ld2450_config(const mqtt_config_update_t *update)
     return ESP_OK;
 }
 
-static int format_radar(char *payload, size_t capacity, const ld2450_report_t *report,
-                        int64_t received_us, uint32_t seq)
+// Binary aai16.Envelope.sensor_telemetry.ld2450, never JSON. The old JSON "uptime_ms" was
+// the acquisition time: it is acquired_us here, in microseconds; uptime_us is when this
+// message was built. seq -> Envelope.sequence (consumed publication attempts).
+// All three physical slots are always sent with a `present` flag (an unused slot is
+// zeros), where the JSON listed only present targets plus "target_count"; the count is the
+// number of present slots. The JSON "distance_mm" is not sent: it is derived from x and y
+// (sqrt(x^2 + y^2)). Returns the encoded length, or -1 on failure.
+static int encode_radar(uint8_t *data, size_t capacity, const ld2450_report_t *report,
+                        int64_t acquired_us, int64_t uptime_us, uint32_t generation, uint32_t seq)
 {
-    int len = snprintf(payload, capacity,
-        "{\"sensor\":\"ld2450\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
-        ",\"uptime_ms\":%" PRId64 ",\"target_count\":%u,\"targets\":[",
-        s_boot_id, seq, received_us / 1000, report->count);
-    if (len < 0 || (size_t)len >= capacity) return -1;
-    bool first = true;
+    if (acquired_us < 0 || uptime_us < acquired_us) return -1;
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_boot_id = e.has_sequence = e.has_generation = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.boot_id = s_boot_id; e.sequence = seq; e.generation = generation;
+    e.which_body = aai16_Envelope_sensor_telemetry_tag;
+    aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    t->has_sensor = t->has_acquired_us = t->has_uptime_us = true;
+    t->sensor = config_sensor_to_wire(SENSOR_LD2450);
+    t->acquired_us = (uint64_t)acquired_us;
+    t->uptime_us = (uint64_t)uptime_us;
+    t->which_reading = aai16_SensorTelemetry_ld2450_tag;
+    aai16_Ld2450Reading *r = &t->reading.ld2450;
+    r->targets_count = LD2450_TARGETS;
     for (unsigned i = 0; i < LD2450_TARGETS; ++i) {
-        const ld2450_target_t *t = &report->targets[i];
-        if (!t->present) continue;
-        unsigned distance = (unsigned)(sqrtf((float)t->x_mm * t->x_mm +
-                                            (float)t->y_mm * t->y_mm) + 0.5f);
-        int n = snprintf(payload + len, capacity - len,
-            "%s{\"slot\":%u,\"x_mm\":%d,\"y_mm\":%d,\"distance_mm\":%u,"
-            "\"speed_cm_s\":%d,\"resolution_mm\":%u}",
-            first ? "" : ",", i + 1, t->x_mm, t->y_mm, distance,
-            t->speed_cm_s, t->resolution_mm);
-        if (n < 0 || (size_t)n >= capacity - len) return -1;
-        len += n;
-        first = false;
+        const ld2450_target_t *src = &report->targets[i];
+        aai16_RadarTarget *dst = &r->targets[i];
+        dst->has_slot = dst->has_present = dst->has_x_mm = dst->has_y_mm = true;
+        dst->has_speed_cm_s = dst->has_resolution_mm = true;
+        dst->slot = i + 1;
+        dst->present = src->present;
+        dst->x_mm = src->x_mm;
+        dst->y_mm = src->y_mm;
+        dst->speed_cm_s = src->speed_cm_s;
+        dst->resolution_mm = src->resolution_mm;
     }
-    int n = snprintf(payload + len, capacity - len, "]}");
-    return n < 0 || (size_t)n >= capacity - len ? -1 : len + n;
+    size_t length = 0;
+    return aai16_protocol_encode(&e, data, capacity, &length) == aai16_ResultCode_RESULT_OK ? (int)length : -1;
 }
 
 // Only the existing MQTT worker calls this. A blocked transport cannot hold
@@ -414,7 +446,7 @@ static void service_radar_snapshot(void)
     bool busy = s_tx_queue != NULL && uxQueueMessagesWaiting(s_tx_queue);
     ld2450_report_t report;
     int64_t received_us;
-    uint32_t epoch;
+    uint32_t epoch, generation;
     portENTER_CRITICAL(&s_stats_lock);
     if (!s_radar_enabled || now < s_radar_next_publish_us) {
         portEXIT_CRITICAL(&s_stats_lock);
@@ -432,6 +464,7 @@ static void service_radar_snapshot(void)
     epoch = s_radar_epoch;
     report = s_radar.report;
     received_us = s_radar.received_us;
+    generation = s_radar.generation;
     s_radar.pending = false;
     portEXIT_CRITICAL(&s_stats_lock);
     if (!pending) return; // No fabricated initial data or repeated old samples.
@@ -445,10 +478,11 @@ static void service_radar_snapshot(void)
         count_event(&stats->offline);
         return;
     }
-    char payload[LD2450_PAYLOAD_SIZE];
-    int len = format_radar(payload, sizeof(payload), &report, received_us, seq);
+    uint8_t payload[LD2450_PAYLOAD_SIZE]; // Binary: length-delimited, never strlen().
+    int len = encode_radar(payload, sizeof(payload), &report, received_us,
+                           esp_timer_get_time(), generation, seq);
     if (len < 0) {
-        count_event(&stats->invalid);
+        count_event(&stats->invalid); // Serialization failure, separate from invalid updates.
         return;
     }
     int64_t start_us = esp_timer_get_time();
@@ -463,7 +497,7 @@ static void service_radar_snapshot(void)
     if (!admitted) return;
     // Admission is the in-flight boundary. Never hold the spinlock across SDK
     // calls: a subsequent disable cannot cancel this already admitted send.
-    int result = esp_mqtt_client_publish(s_client, LD2450_DATA_TOPIC, payload, len, 0, 0);
+    int result = esp_mqtt_client_publish(s_client, LD2450_DATA_TOPIC, (const char *)payload, len, 0, 0);
     int64_t elapsed_us = esp_timer_get_time() - start_us;
     portENTER_CRITICAL(&s_stats_lock);
     if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;

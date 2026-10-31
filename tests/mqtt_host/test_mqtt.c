@@ -396,6 +396,24 @@ int main(int argc, char **argv)
         assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--ld2450-bridge")) {
+        // Emit the exact bytes the real publisher hands to the SDK for one radar report:
+        // slots 1 and 3 present (negative values at both extremes), slot 2 empty,
+        // acquired 0.5 s before the message is built, configuration generation 7.
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        s_transactions.generation[SENSOR_LD2450] = 7;
+        clock_us = INT64_C(99885041);
+        s_radar_next_publish_us = clock_us;
+        ld2450_report_t report = radar_fixture(5);
+        assert(mqtt_manager_update_ld2450_snapshot(&report, clock_us - 500000) == ESP_OK);
+        service_radar_snapshot();
+        assert(publish_calls == 1 && last_qos == 0 && !strcmp(last_topic, LD2450_DATA_TOPIC));
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--dht22-bridge")) {
         // Emit the exact bytes the real publisher hands to the SDK for one DHT22 reading
         // (negative temperature, so the float sign survives), generation 7.

@@ -134,6 +134,25 @@ assert t.hcsr04p.distance_cm == f32(42.1) and t.hcsr04p.echo_us == f32(2456.3)
 assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
 (output / 'hcsr04p.pb').write_bytes(wire)
 print(f'PASS: live C/nanopb HC-SR04P payload ({len(wire)} bytes) decoded by Python; exact float32, microsecond times, sequence/generation', flush=True)
+# LD2450 radar report: bytes from the real C/nanopb mailbox publisher decoded by Python.
+wire = subprocess.check_output([str(binary), '--ld2450-bridge'])
+message = pb.Envelope.FromString(wire)
+t = message.sensor_telemetry
+assert message.WhichOneof('body') == 'sensor_telemetry' and wire[:2] == b'\x08\x01'
+assert message.protocol_version == 1 and message.boot_id == 0x12345678 and message.sequence == 1
+assert message.HasField('generation') and message.generation == 7
+assert not message.HasField('request_id') and not message.HasField('phase')
+assert t.sensor == pb.SENSOR_LD2450 and t.WhichOneof('reading') == 'ld2450'
+assert t.acquired_us == 99385041 and t.uptime_us == 99885041  # Acquired 0.5 s before building.
+radar = t.ld2450.targets
+assert [x.slot for x in radar] == [1, 2, 3] and [x.present for x in radar] == [True, False, True]
+fields = lambda x: (x.x_mm, x.y_mm, x.speed_cm_s, x.resolution_mm)
+assert fields(radar[0]) == (-782, 1713, -16, 320)
+assert fields(radar[1]) == (0, 0, 0, 0)  # Unused slot: present = false, all zero.
+assert fields(radar[2]) == (-32767, -32767, -32767, 65535)
+assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 160
+(output / 'ld2450.pb').write_bytes(wire)
+print(f'PASS: live C/nanopb LD2450 payload ({len(wire)} bytes) decoded by Python; 3 slots incl. empty slot, signed extremes, microsecond times, sequence/generation', flush=True)
 # DHT22 reading: bytes from the real C/nanopb publisher decoded by Python.
 wire = subprocess.check_output([str(binary), '--dht22-bridge'])
 message = pb.Envelope.FromString(wire)

@@ -6,7 +6,7 @@ static ld2450_report_t radar_fixture(unsigned mask)
     const ld2450_target_t targets[] = {
         {true, -782, 1713, -16, 320},
         {true, 3000, -4000, 12, 640},
-        {true, -32768, -32768, -32768, 65535},
+        {true, -32767, -32767, -32767, 65535}, // Sign/magnitude parser: never -32768.
     };
     for (unsigned i = 0; i < LD2450_TARGETS; ++i) {
         if (mask & (1U << i)) { r.targets[i] = targets[i]; r.count++; }
@@ -19,33 +19,47 @@ static void radar_due(void)
     if (clock_us < s_radar_next_publish_us) clock_us = s_radar_next_publish_us;
 }
 
-static void check_radar_json(const ld2450_report_t *r, int64_t received_us, uint32_t seq)
+// Decode a captured LD2450 payload (binary aai16.Envelope, never JSON).
+static aai16_Envelope decode_radar(const char *bytes, int length)
+{
+    aai16_Envelope e;
+    assert(length > 0 && length < LD2450_PAYLOAD_SIZE);
+    assert(aai16_protocol_decode((const uint8_t *)bytes, (size_t)length, &e) == aai16_ResultCode_RESULT_OK);
+    assert(e.has_protocol_version && e.protocol_version == AAI16_PROTOCOL_VERSION);
+    assert(e.which_body == aai16_Envelope_sensor_telemetry_tag);
+    assert(e.has_boot_id && e.has_sequence && e.has_generation && !e.has_request_id && !e.has_phase);
+    const aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    assert(t->sensor == aai16_SensorId_SENSOR_LD2450 && t->which_reading == aai16_SensorTelemetry_ld2450_tag);
+    assert(t->reading.ld2450.targets_count == LD2450_TARGETS);
+    return e;
+}
+
+// The message just handed to the SDK carries this report, acquisition time and sequence.
+// All three slots are present on the wire; an unused slot is `present = false` with zeros.
+static void check_radar_message(const ld2450_report_t *r, int64_t received_us, uint32_t seq)
 {
     assert(!strcmp(last_topic, LD2450_DATA_TOPIC) && last_qos == 0);
-    cJSON *data = cJSON_Parse(last_payload);
-    assert(data && cJSON_GetArraySize(data) == 6);
-    assert(!strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring, "ld2450"));
-    assert(!strcmp(cJSON_GetObjectItem(data, "boot_id")->valuestring, "12345678"));
-    assert(cJSON_GetObjectItem(data, "uptime_ms")->valuedouble == received_us / 1000);
-    assert(cJSON_GetObjectItem(data, "seq")->valuedouble == seq);
-    assert(cJSON_GetObjectItem(data, "target_count")->valueint == (int)r->count);
-    cJSON *targets = cJSON_GetObjectItem(data, "targets");
-    assert(cJSON_IsArray(targets) && cJSON_GetArraySize(targets) == (int)r->count);
-    unsigned index = 0;
-    const unsigned distances[] = {1883, 5000, 46341};
+    aai16_Envelope e = decode_radar(last_payload, last_payload_len);
+    const aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    assert(e.boot_id == 0x12345678 && e.sequence == seq);
+    assert(e.generation == s_transactions.generation[SENSOR_LD2450]);
+    assert(t->acquired_us == (uint64_t)received_us);
+    assert(t->uptime_us >= t->acquired_us && t->uptime_us <= (uint64_t)clock_us);
+    const unsigned distances[] = {1883, 5000}; // The JSON "distance_mm" of the first two fixtures.
+    unsigned present = 0;
     for (unsigned i = 0; i < LD2450_TARGETS; ++i) {
-        const ld2450_target_t *t = &r->targets[i];
-        if (!t->present) continue;
-        cJSON *target = cJSON_GetArrayItem(targets, index++);
-        assert(target && cJSON_GetArraySize(target) == 6);
-        assert(cJSON_GetObjectItem(target, "slot")->valueint == (int)i + 1);
-        assert(cJSON_GetObjectItem(target, "x_mm")->valueint == t->x_mm);
-        assert(cJSON_GetObjectItem(target, "y_mm")->valueint == t->y_mm);
-        assert(cJSON_GetObjectItem(target, "speed_cm_s")->valueint == t->speed_cm_s);
-        assert(cJSON_GetObjectItem(target, "resolution_mm")->valueint == t->resolution_mm);
-        assert(cJSON_GetObjectItem(target, "distance_mm")->valuedouble == distances[i]);
+        const ld2450_target_t *src = &r->targets[i];
+        const aai16_RadarTarget *x = &t->reading.ld2450.targets[i];
+        assert(x->slot == i + 1 && x->present == src->present);
+        assert(x->x_mm == src->x_mm && x->y_mm == src->y_mm);
+        assert(x->speed_cm_s == src->speed_cm_s && x->resolution_mm == src->resolution_mm);
+        if (!src->present) { assert(!x->x_mm && !x->y_mm && !x->speed_cm_s && !x->resolution_mm); continue; }
+        present += 1;
+        // The dropped "distance_mm" is recoverable from x and y.
+        unsigned distance = (unsigned)(sqrtf((float)x->x_mm * x->x_mm + (float)x->y_mm * x->y_mm) + 0.5f);
+        if (i < 2) assert(distance == distances[i]);
     }
-    cJSON_Delete(data);
+    assert(present == r->count);
 }
 
 static int64_t during_publish_received_us;
@@ -88,24 +102,33 @@ static void test_radar_telemetry(void)
         assert(!uxQueueMessagesWaiting(s_tx_queue));
         pump();
         assert(publish_calls == calls + 1 && enqueue_calls == enqueues);
-        check_radar_json(&expected, acquired, seq);
+        check_radar_message(&expected, acquired, seq);
         radar_due(); pump(); // No new frame: never repeat the consumed snapshot.
         assert(publish_calls == calls + 1);
     }
 
-    // Largest storage-type values, 10-digit seq and full 64-bit timestamp.
-    // Existing queue items remain 320 bytes; the radar JSON never enters them.
+    // Largest values: +-32767 axes, 16-bit resolution, 64-bit times, 32-bit counters.
     ld2450_report_t worst = {.count = 3};
-    for (unsigned i = 0; i < 3; ++i) worst.targets[i] = (ld2450_target_t){true, INT16_MIN, INT16_MIN, INT16_MIN, UINT16_MAX};
-    struct { char payload[LD2450_PAYLOAD_SIZE]; char guard[4]; } bounded = {.guard = "END"};
-    int length = format_radar(bounded.payload, sizeof(bounded.payload), &worst, INT64_MAX, UINT32_MAX);
-    assert(length > TX_PAYLOAD_SIZE && length < LD2450_PAYLOAD_SIZE && !strcmp(bounded.guard, "END"));
-    cJSON *data = cJSON_Parse(bounded.payload);
-    assert(data && cJSON_GetArraySize(cJSON_GetObjectItem(data, "targets")) == 3);
-    cJSON_Delete(data);
-    assert(format_radar(bounded.payload, 20, &worst, INT64_MAX, UINT32_MAX) == -1);
-    assert(!strcmp(bounded.guard, "END"));
-    printf("PASS: radar JSON 0/1/2/3 targets, signed units/slots, worst payload=%d/512 bytes\n", length);
+    for (unsigned i = 0; i < 3; ++i) worst.targets[i] = (ld2450_target_t){true, -32767, -32767, -32767, UINT16_MAX};
+    struct { uint8_t payload[LD2450_PAYLOAD_SIZE]; uint8_t guard[4]; } bounded;
+    memset(&bounded, 0xA5, sizeof(bounded));
+    int length = encode_radar(bounded.payload, sizeof(bounded.payload), &worst, INT64_MAX, INT64_MAX, UINT32_MAX, UINT32_MAX);
+    assert(length > 0 && length < LD2450_PAYLOAD_SIZE && length < TX_PAYLOAD_SIZE);
+    assert(bounded.guard[0] == 0xA5 && bounded.guard[3] == 0xA5);
+    aai16_Envelope decoded;
+    assert(aai16_protocol_decode(bounded.payload, (size_t)length, &decoded) == aai16_ResultCode_RESULT_OK);
+    assert(decoded.sequence == UINT32_MAX && decoded.generation == UINT32_MAX);
+    assert(decoded.body.sensor_telemetry.acquired_us == (uint64_t)INT64_MAX);
+    // Every capacity below the length fails without writing past it; the exact fit succeeds.
+    for (int capacity = 0; capacity < length; ++capacity) {
+        memset(&bounded, 0xA5, sizeof(bounded));
+        assert(encode_radar(bounded.payload, (size_t)capacity, &worst, INT64_MAX, INT64_MAX, UINT32_MAX, UINT32_MAX) == -1);
+        for (size_t i = (size_t)capacity; i < sizeof(bounded); ++i) assert(((const uint8_t *)&bounded)[i] == 0xA5);
+    }
+    assert(encode_radar(bounded.payload, (size_t)length, &worst, INT64_MAX, INT64_MAX, UINT32_MAX, UINT32_MAX) == length);
+    assert(encode_radar(bounded.payload, sizeof(bounded.payload), &worst, 10, 9, 0, 0) == -1); // uptime < acquired
+    assert(encode_radar(bounded.payload, sizeof(bounded.payload), &worst, -1, 9, 0, 0) == -1);
+    printf("PASS: radar Protobuf 0/1/2/3 targets, signed units/slots, worst payload=%d/%d bytes\n", length, LD2450_PAYLOAD_SIZE);
 
     // 10 Hz input is coalesced to <=1 Hz publication, with a fresh timestamp.
     radar_due();
@@ -122,7 +145,7 @@ static void test_radar_telemetry(void)
     assert(s_radar_coalesced == coalesced + 9);
     pump();
     assert(publish_calls == calls + 1);
-    check_radar_json(&expected, acquired, seq);
+    check_radar_message(&expected, acquired, seq);
     assert(mqtt_manager_update_ld2450_snapshot(&expected, clock_us) == ESP_OK);
     clock_us = s_radar_next_publish_us - 1; pump();
     assert(publish_calls == calls + 1); // No early send, even with fresh frames.
@@ -136,8 +159,26 @@ static void test_radar_telemetry(void)
     assert(mqtt_manager_update_ld2450_snapshot(NULL, acquired) == ESP_ERR_INVALID_ARG);
     assert(mqtt_manager_update_ld2450_snapshot(&expected, -1) == ESP_ERR_INVALID_ARG);
     assert(mqtt_manager_update_ld2450_snapshot(&expected, acquired + 1) == ESP_ERR_INVALID_ARG);
-    assert(s_radar_invalid == 4);
-    seq = stats->attempts + 1; pump(); check_radar_json(&expected, acquired, seq);
+    // Values the wire contract cannot carry: -32768 on any axis, or data in an unused slot.
+    ld2450_report_t out_of_range = expected; out_of_range.targets[0].x_mm = -32768;
+    assert(mqtt_manager_update_ld2450_snapshot(&out_of_range, acquired) == ESP_ERR_INVALID_ARG);
+    out_of_range = expected; out_of_range.targets[2].speed_cm_s = -32768;
+    assert(mqtt_manager_update_ld2450_snapshot(&out_of_range, acquired) == ESP_ERR_INVALID_ARG);
+    ld2450_report_t ghost = expected; ghost.targets[1].x_mm = 5; // Slot 2 is not present in this fixture.
+    assert(mqtt_manager_update_ld2450_snapshot(&ghost, acquired) == ESP_ERR_INVALID_ARG);
+    assert(s_radar_invalid == 7);
+    seq = stats->attempts + 1; pump(); check_radar_message(&expected, acquired, seq);
+
+    // A report keeps the generation it was acquired under, even when a configuration commit
+    // advances the sensor's generation before the report is published.
+    radar_due(); acquired = clock_us;
+    uint32_t generation_before = s_transactions.generation[SENSOR_LD2450];
+    assert(mqtt_manager_update_ld2450_snapshot(&expected, acquired) == ESP_OK);
+    s_transactions.generation[SENSOR_LD2450] = generation_before + 1;
+    seq = stats->attempts + 1; pump();
+    aai16_Envelope held = decode_radar(last_payload, last_payload_len);
+    assert(held.generation == generation_before && held.sequence == seq);
+    s_transactions.generation[SENSOR_LD2450] = generation_before;
 
     // Exact two-second boundary: silence does not turn old data into a new read.
     radar_due();
@@ -161,7 +202,7 @@ static void test_radar_telemetry(void)
     radar_due(); acquired = clock_us;
     assert(mqtt_manager_update_ld2450_snapshot(&expected, acquired) == ESP_OK);
     event(MQTT_EVENT_CONNECTED);
-    seq = stats->attempts + 1; pump(); check_radar_json(&expected, acquired, seq);
+    seq = stats->attempts + 1; pump(); check_radar_message(&expected, acquired, seq);
     event(MQTT_EVENT_DISCONNECTED); radar_due();
     assert(mqtt_manager_update_ld2450_snapshot(&expected, clock_us) == ESP_OK);
     clock_us += LD2450_MAX_AGE_US;
@@ -183,7 +224,7 @@ static void test_radar_telemetry(void)
     assert(!uxQueueMessagesWaiting(s_tx_queue) && !uxQueueMessagesWaiting(s_event_queue));
     radar_due(); acquired = clock_us;
     assert(mqtt_manager_update_ld2450_snapshot(&expected, acquired) == ESP_OK);
-    seq = stats->attempts + 1; pump(); check_radar_json(&expected, acquired, seq);
+    seq = stats->attempts + 1; pump(); check_radar_message(&expected, acquired, seq);
     assert(stats->queued == 0 && stats->queue_full == 0 && stats->enqueued == 0);
 
     // All ACK outbox capacity remains usable; QoS 0 radar creates no entry.
@@ -198,12 +239,12 @@ static void test_radar_telemetry(void)
     assert(mqtt_manager_update_ld2450_snapshot(&expected, acquired) == ESP_OK);
     publish_hook = radar_during_publish;
     seq = stats->attempts + 1; service_radar_snapshot();
-    check_radar_json(&expected, acquired, seq);
+    check_radar_message(&expected, acquired, seq);
     assert(s_radar.pending && stats->max_tx_call_us == 5020000);
     expected = radar_fixture(4); seq = stats->attempts + 1;
     calls = publish_calls; pump();
     assert(publish_calls == calls + 1); // One latest sample, no catch-up burst.
-    check_radar_json(&expected, during_publish_received_us, seq);
+    check_radar_message(&expected, during_publish_received_us, seq);
 
     // Transport errors are MQTT counters only, and failed samples are not retried.
     radar_due(); assert(mqtt_manager_update_ld2450_snapshot(&expected, clock_us) == ESP_OK);
@@ -216,7 +257,7 @@ static void test_radar_telemetry(void)
     event(MQTT_EVENT_CONNECTED);
     assert(stats->attempts == stats->publish_ok + stats->publish_failed + stats->offline + stats->stale);
     assert(!stats->outbox_full && !stats->invalid && !critical_depth);
-    puts("PASS: radar latest snapshot, 1 Hz, stale/invalid/offline/full queue, ACK/RFID isolation, blocked SDK, QoS0 counters");
+    puts("PASS: radar Protobuf latest snapshot, 1 Hz, stale/invalid/offline/full queue, ACK/RFID isolation, blocked SDK, QoS0 counters");
 }
 
 static void radar_interval(uint32_t ms)
@@ -279,7 +320,7 @@ static void test_radar_config(void)
     clock_us = s_radar_next_publish_us - 100000;
     int64_t acquired = clock_us;
     assert(mqtt_manager_update_ld2450_snapshot(&r, acquired) == ESP_OK);
-    radar_due(); uint32_t seq = stats->attempts + 1; pump(); check_radar_json(&r, acquired, seq);
+    radar_due(); uint32_t seq = stats->attempts + 1; pump(); check_radar_message(&r, acquired, seq);
 
     radar_interval(2000);
     assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
@@ -297,7 +338,7 @@ static void test_radar_config(void)
     ld2450_report_t idle = {0};
     clock_us = s_radar_next_publish_us - 100000; acquired = clock_us;
     assert(mqtt_manager_update_ld2450_snapshot(&idle, acquired) == ESP_OK);
-    radar_due(); seq = stats->attempts + 1; pump(); check_radar_json(&idle, acquired, seq);
+    radar_due(); seq = stats->attempts + 1; pump(); check_radar_message(&idle, acquired, seq);
 
     // Disable/re-enable between copy and SDK admission invalidates even a
     // copied report. The new generation's snapshot must remain pending.
@@ -309,7 +350,7 @@ static void test_radar_config(void)
     // Advance with new frames so the retained 2 s period has fresh idle data.
     clock_us = s_radar_next_publish_us - 100000; acquired = clock_us;
     assert(mqtt_manager_update_ld2450_snapshot(&idle, acquired) == ESP_OK);
-    radar_due(); seq = stats->attempts + 1; pump(); check_radar_json(&idle, acquired, seq);
+    radar_due(); seq = stats->attempts + 1; pump(); check_radar_message(&idle, acquired, seq);
     radar_due(); assert(mqtt_manager_update_ld2450_snapshot(&r, clock_us) == ESP_OK);
     timer_hook = radar_interval_during_format; timer_hook_countdown = 2;
     calls = publish_calls; service_radar_snapshot();

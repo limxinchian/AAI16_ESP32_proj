@@ -83,13 +83,18 @@ esp_err_t mqtt_manager_publish_max6675(float temperature_c);
 esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_length);
 
 // Call only for a validated radar report, with its acquisition timestamp.
+// The payload is a binary aai16.Envelope (sensor_telemetry.ld2450), not JSON: all
+// three slots with a `present` flag (unused slots are zero), acquired_us (= received_us),
+// uptime_us, boot_id, sequence and the sensor's configuration generation at handoff.
+// Reports with an axis below -32767, a count that disagrees with the present flags,
+// or data in an unused slot are rejected with ESP_ERR_INVALID_ARG.
 // Copies one latest snapshot under a short spinlock; no queue wait or SDK call.
 // New reports replace pending ones, including offline. The existing publisher
 // samples this mailbox at the configured period (default 1000 ms), QoS 0,
 // retain=0. Disabled updates are rejected with ESP_ERR_INVALID_STATE. Reports aged
 // >=2 s are dropped, and a consumed report is never resent without an update.
-// seq counts publication attempts (including offline/stale drops), not frames;
-// uptime_ms is acquisition time. Pending ACK/telemetry queue work takes priority.
+// sequence counts publication attempts (including offline/stale drops), not frames.
+// Pending ACK/telemetry queue work takes priority.
 // ESP_OK means snapshot acceptance only; delivery failures never affect UART
 // sensor status. This path uses neither the shared TX queue nor the QoS 1 outbox.
 esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
