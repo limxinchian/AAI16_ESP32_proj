@@ -1373,6 +1373,13 @@ esp_err_t mqtt_manager_publish_dht22(
     return queue_message(&message);
 }
 
+// Card presentation: binary aai16.Envelope.sensor_telemetry.rc522, never JSON.
+// The old JSON "event":"card_presented" is implied by the message type and topic;
+// "uid_length" is the uid byte count. seq -> Envelope.sequence (attempt count, so
+// rejected/dropped submissions still advance it), uptime_ms -> uptime_us.
+// generation is the sensor's committed configuration generation at submission.
+_Static_assert(36 + aai16_SensorTelemetry_size < TX_PAYLOAD_SIZE, "RC522 event exceeds TX slot");
+
 esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_length)
 {
     uint32_t seq = begin_attempt(TX_RC522_EVENT);
@@ -1380,18 +1387,33 @@ esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_lengt
         count_event(&s_stats[TX_RC522_EVENT].invalid);
         return ESP_ERR_INVALID_ARG;
     }
-    static const char hex[] = "0123456789ABCDEF";
-    char uid_hex[21];
-    for (unsigned i = 0; i < uid_length; ++i) {
-        uid_hex[2 * i] = hex[uid[i] >> 4];
-        uid_hex[2 * i + 1] = hex[uid[i] & 0x0f];
+    int64_t now_us = esp_timer_get_time();
+    uint32_t generation;
+    portENTER_CRITICAL(&s_config_lock);
+    generation = s_transactions.generation[SENSOR_RC522];
+    portEXIT_CRITICAL(&s_config_lock);
+
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_boot_id = e.has_sequence = e.has_generation = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.boot_id = s_boot_id; e.sequence = seq; e.generation = generation;
+    e.which_body = aai16_Envelope_sensor_telemetry_tag;
+    aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    t->has_sensor = t->has_acquired_us = t->has_uptime_us = true;
+    t->sensor = config_sensor_to_wire(SENSOR_RC522);
+    t->acquired_us = t->uptime_us = (uint64_t)now_us;
+    t->which_reading = aai16_SensorTelemetry_rc522_tag;
+    t->reading.rc522.has_uid = true;
+    t->reading.rc522.uid.size = uid_length;
+    memcpy(t->reading.rc522.uid.bytes, uid, uid_length);
+
+    tx_message_t message = {.kind = TX_RC522_EVENT, .created_ms = now_us / 1000};
+    size_t length = 0;
+    if (aai16_protocol_encode(&e, (uint8_t *)message.payload, sizeof(message.payload), &length) != CR(OK)) {
+        count_event(&s_stats[TX_RC522_EVENT].invalid);
+        return ESP_ERR_INVALID_ARG;
     }
-    uid_hex[2 * uid_length] = '\0';
-    tx_message_t message = {.kind = TX_RC522_EVENT, .created_ms = esp_timer_get_time() / 1000};
-    message.len = snprintf(message.payload, sizeof(message.payload),
-        "{\"sensor\":\"rc522\",\"event\":\"card_presented\",\"uid_hex\":\"%s\",\"uid_length\":%u,"
-        "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ",\"uptime_ms\":%" PRId64 "}",
-        uid_hex, (unsigned)uid_length, s_boot_id, seq, message.created_ms);
+    message.len = (int)length; // Binary payload: embedded NULs are not terminators.
     return queue_message(&message);
 }
 

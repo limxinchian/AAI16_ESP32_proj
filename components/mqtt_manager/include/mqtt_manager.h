@@ -66,14 +66,16 @@ esp_err_t mqtt_manager_publish_bme280(
 // framing faults are read failures in Sensor Status, never published as 0 degC.
 esp_err_t mqtt_manager_publish_max6675(float temperature_c);
 
-// Call once per presentation, not per poll. Copies 4/7/10-byte UIDs; uppercase
-// uid_hex has no separators. Separate 8-event FIFO accepts while disconnected,
+// Call once per presentation, not per poll. Copies 4/7/10-byte UIDs. The payload
+// is a binary aai16.Envelope (sensor_telemetry.rc522.uid) with boot_id, sequence
+// and the sensor's configuration generation; it is not JSON and not NUL-terminated.
+// Separate 8-event FIFO accepts while disconnected,
 // drops newest when full, and expires waiting events after 60000 ms. No flash
-// persistence. seq counts attempts, including rejected/dropped submissions.
+// persistence. Envelope.sequence counts attempts, including rejected/dropped submissions.
 // Publisher uses non-retained QoS 1 with a 1024-byte event outbox allowance,
 // preserving 4096 bytes for ACKs/control. SDK expiry remains its existing 30 s
 // default after enqueue. ESP_OK means local acceptance, not broker delivery.
-// SDK retries can deliver duplicates: deduplicate by (sensor, boot_id, seq).
+// SDK retries can deliver duplicates: deduplicate by (sensor, boot_id, sequence).
 esp_err_t mqtt_manager_publish_rc522_event(const uint8_t *uid, uint8_t uid_length);
 
 // Call only for a validated radar report, with its acquisition timestamp.

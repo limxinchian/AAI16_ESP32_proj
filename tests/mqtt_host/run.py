@@ -102,6 +102,22 @@ for name in ('a', 'b', 'status'):
         assert not p.HasField('output_int8') and not p.HasField('first_sequence') and not p.logits
     (output / f'ml_{name}.pb').write_bytes(wire)
 print('PASS: 3 live C/nanopb MQTT payloads decoded by Python; embedded NUL, A/B/status, exact uint64, identity/epoch/fields', flush=True)
+# RC522 card events: bytes from the real C/nanopb publisher decoded by Python.
+# Zero bytes inside the UID and the exact uint64 uptime exercise binary handling.
+for uid_hex in ('5a2dfd03', '5a2dfd030080ff', '5a2dfd030080ff0110ab'):
+    wire = subprocess.check_output([str(binary), '--rc522-bridge', uid_hex])
+    message = pb.Envelope.FromString(wire)
+    t = message.sensor_telemetry
+    assert message.WhichOneof('body') == 'sensor_telemetry' and wire[:2] == b''
+    assert message.protocol_version == 1 and message.boot_id == 0x12345678 and message.sequence == 1
+    assert message.HasField('generation') and message.generation == 0
+    assert not message.HasField('request_id') and not message.HasField('phase')
+    assert t.sensor == pb.SENSOR_RC522 and t.WhichOneof('reading') == 'rc522'
+    assert t.rc522.uid == bytes.fromhex(uid_hex)
+    assert t.acquired_us == t.uptime_us == (1 << 54) + 5000123
+    assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
+    (output / f'rc522_{len(uid_hex) // 2}.pb').write_bytes(wire)
+print('PASS: 3 live C/nanopb RC522 payloads decoded by Python; UID 4/7/10 incl. embedded NUL, exact uint64, sequence/generation', flush=True)
 roundtrips = 0
 maximum_request = maximum_ack = 0
 for sensor, (_, minimum, maximum) in SENSORS.items():

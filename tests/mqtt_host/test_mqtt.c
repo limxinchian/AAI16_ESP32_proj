@@ -195,32 +195,43 @@ static void command(const char *payload, int len, int total, int offset, bool re
 #include "test_config_protocol.inc"
 #include "test_motion_protocol.inc"
 
+// RC522 events are binary aai16.Envelope sensor telemetry, never JSON. Decode the
+// exact bytes handed to the SDK, using the bounded protocol wrapper.
+static aai16_Envelope decode_last_event(void)
+{
+    aai16_Envelope e;
+    assert(last_payload_len > 0 && last_payload_len < TX_PAYLOAD_SIZE);
+    assert(aai16_protocol_decode((const uint8_t *)last_payload, (size_t)last_payload_len, &e) == aai16_ResultCode_RESULT_OK);
+    assert(e.has_protocol_version && e.protocol_version == AAI16_PROTOCOL_VERSION);
+    assert(e.which_body == aai16_Envelope_sensor_telemetry_tag);
+    assert(e.has_boot_id && e.has_sequence && e.has_generation && !e.has_request_id && !e.has_phase);
+    return e;
+}
+
 static void test_rfid_events(void)
 {
+    // Embedded zero bytes (index 4) must survive: the payload is length-delimited.
     const uint8_t uid[] = {0x5a, 0x2d, 0xfd, 0x03, 0, 0x80, 0xff, 0x01, 0x10, 0xab};
-    const char *hex[] = {"5A2DFD03", "5A2DFD030080FF", "5A2DFD030080FF0110AB"};
     tx_stats_t *stats = &s_stats[TX_RC522_EVENT];
     outbox_size = 0; enqueue_result = 1; clock_us = 127595000;
     for (unsigned i = 0; i < 3; ++i) {
         unsigned length = 4 + 3 * i;
         uint8_t temporary[10]; memcpy(temporary, uid, sizeof(uid));
         int calls = enqueue_calls, publications = publish_calls;
-        int64_t submitted_ms = clock_us / 1000;
+        int64_t submitted_us = clock_us;
         assert(mqtt_manager_publish_rc522_event(temporary, length) == ESP_OK);
         memset(temporary, 0, sizeof(temporary)); // Local queue owns the complete event.
         assert(enqueue_calls == calls && publish_calls == publications);
         service_event_queue();
         assert(enqueue_calls == calls + 1 && last_qos == 1 && !strcmp(last_topic, RC522_EVENT_TOPIC));
-        cJSON *data = cJSON_Parse(last_payload);
-        assert(data && cJSON_GetArraySize(data) == 7);
-        assert(!strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring, "rc522"));
-        assert(!strcmp(cJSON_GetObjectItem(data, "event")->valuestring, "card_presented"));
-        assert(!strcmp(cJSON_GetObjectItem(data, "uid_hex")->valuestring, hex[i]));
-        assert(cJSON_GetObjectItem(data, "uid_length")->valueint == (int)length);
-        assert(cJSON_GetObjectItem(data, "seq")->valueint == (int)i + 1);
-        assert(cJSON_GetObjectItem(data, "uptime_ms")->valuedouble == submitted_ms);
-        assert(!strcmp(cJSON_GetObjectItem(data, "boot_id")->valuestring, "12345678"));
-        cJSON_Delete(data);
+        aai16_Envelope e = decode_last_event();
+        const aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+        assert(e.boot_id == 0x12345678 && e.sequence == i + 1);
+        assert(e.generation == s_transactions.generation[SENSOR_RC522]);
+        assert(t->sensor == aai16_SensorId_SENSOR_RC522 && t->which_reading == aai16_SensorTelemetry_rc522_tag);
+        assert(t->acquired_us == (uint64_t)submitted_us && t->uptime_us == t->acquired_us);
+        assert(t->reading.rc522.has_uid && t->reading.rc522.uid.size == length);
+        assert(!memcmp(t->reading.rc522.uid.bytes, uid, length));
     }
     assert(mqtt_manager_publish_rc522_event(NULL, 4) == ESP_ERR_INVALID_ARG);
     assert(mqtt_manager_publish_rc522_event(uid, 5) == ESP_ERR_INVALID_ARG);
@@ -242,14 +253,18 @@ static void test_rfid_events(void)
     assert(enqueue_calls == calls && uxQueueMessagesWaiting(s_event_queue) == EVENT_QUEUE_SIZE);
     event(MQTT_EVENT_CONNECTED);
     model_event_outbox = true;
+    // Earlier unacknowledged events already hold most of the event allowance, so
+    // the test exercises backpressure whatever the encoded event size is. (A
+    // Protobuf event is under half the old JSON size: eight of them no longer
+    // fill the allowance on their own.)
+    outbox_size = EVENT_OUTBOX_BUDGET_BYTES - 300;
     for (unsigned i = 0; i < EVENT_QUEUE_SIZE; ++i) service_event_queue();
     assert(outbox_size > 0 && outbox_size <= EVENT_OUTBOX_BUDGET_BYTES);
     assert(OUTBOX_LIMIT_BYTES - outbox_size >= ACK_OUTBOX_RESERVE_BYTES);
     unsigned waiting = uxQueueMessagesWaiting(s_event_queue);
     assert(waiting > 0 && waiting < EVENT_QUEUE_SIZE && s_event_outbox_waits > 0);
-    cJSON *data = cJSON_Parse(last_payload);
-    assert(cJSON_GetObjectItem(data, "seq")->valueint == (int)(oldest_seq + EVENT_QUEUE_SIZE - waiting - 1));
-    cJSON_Delete(data);
+    aai16_Envelope buffered = decode_last_event();
+    assert(buffered.sequence == oldest_seq + EVENT_QUEUE_SIZE - waiting - 1);
 
     // Full event queues/budget cannot take any existing ACK/telemetry slot.
     calls = enqueue_calls;
@@ -285,10 +300,12 @@ static void test_rfid_events(void)
     assert(mqtt_manager_publish_rc522_event(uid, 10) == ESP_OK);
     uint32_t attempts = stats->attempts, accepted = stats->enqueued;
     enqueue_result = -2; service_event_queue();
-    char original[TX_PAYLOAD_SIZE]; strcpy(original, last_payload);
+    char original[TX_PAYLOAD_SIZE]; int original_len = last_payload_len;
+    memcpy(original, last_payload, (size_t)original_len); // Binary: never strcpy().
     assert(uxQueueMessagesWaiting(s_event_queue) == 1 && stats->enqueue_failed == 0);
     enqueue_result = 1; service_event_queue();
-    assert(!strcmp(original, last_payload) && stats->attempts == attempts && stats->enqueued == accepted + 1);
+    assert(last_payload_len == original_len && !memcmp(original, last_payload, (size_t)original_len));
+    assert(stats->attempts == attempts && stats->enqueued == accepted + 1);
     assert(stats->outbox_full == 0); // Retained, not mislabeled as a drop.
     enqueue_result = -1;
     assert(mqtt_manager_publish_rc522_event(uid, 4) == ESP_OK);
@@ -320,7 +337,7 @@ static void test_rfid_events(void)
     mqtt_manager_log_diagnostics(); assert(outbox_queries == queries);
     assert(stats->attempts == stats->enqueued + stats->queue_full + stats->invalid +
            stats->offline + stats->stale + stats->enqueue_failed);
-    puts("PASS: RFID JSON/UID4/7/10, offline FIFO, expiry, drop accounting, ACK reserve/priority, QoS1 handoff");
+    puts("PASS: RFID Protobuf/UID4/7/10 incl. embedded NUL, offline FIFO, expiry, drop accounting, ACK reserve/priority, QoS1 handoff");
 }
 
 #include "test_radar.c"
@@ -339,6 +356,28 @@ int main(int argc, char **argv)
         motion_result_t r = motion_fixture(!strcmp(argv[2], "b"));
         if (!strcmp(argv[2], "status")) { r.status = MOTION_INIT_FAILED; r.model_ready = false; }
         check_motion_publish(&r);
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "--rc522-bridge")) {
+        // Emit the exact bytes the firmware hands to the SDK for one card
+        // presentation. argv[2] is the UID as hex text (8, 14 or 20 digits).
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        uint8_t uid[10] = {0};
+        size_t digits = strlen(argv[2]);
+        assert(digits % 2 == 0 && digits / 2 <= sizeof(uid));
+        for (size_t i = 0; i < digits / 2; ++i) {
+            unsigned value;
+            assert(sscanf(argv[2] + 2 * i, "%2x", &value) == 1);
+            uid[i] = (uint8_t)value;
+        }
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        clock_us = (INT64_C(1) << 54) + 5000123; // Exercise exact uint64 decoding.
+        assert(mqtt_manager_publish_rc522_event(uid, (uint8_t)(digits / 2)) == ESP_OK);
+        service_event_queue();
+        assert(enqueue_calls == 1 && last_qos == 1 && !strcmp(last_topic, RC522_EVENT_TOPIC));
         assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
         return 0;
     }
