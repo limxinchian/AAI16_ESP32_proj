@@ -185,7 +185,9 @@ static aai16_ResultCode telemetry_validate(const aai16_SensorTelemetry *t)
     case S(DHT22): {
         const aai16_Dht22Reading *r = &t->reading.dht22;
         REQUIRE(r->has_temperature_c && r->has_humidity_pct);
-        return isfinite(r->temperature_c) && isfinite(r->humidity_pct) ? R(OK) : R(OUT_OF_RANGE);
+        return isfinite(r->temperature_c) && isfinite(r->humidity_pct) &&
+               r->temperature_c >= -40.0f && r->temperature_c <= 80.0f &&
+               r->humidity_pct >= 0.0f && r->humidity_pct <= 100.0f ? R(OK) : R(OUT_OF_RANGE);
     }
     case S(GY511): {
         const aai16_Gy511Reading *r = &t->reading.gy511;

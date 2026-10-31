@@ -48,6 +48,10 @@ esp_err_t mqtt_manager_publish_motion(const motion_result_t *result);
 // seq counts per-sensor API attempts (including skipped/failed submissions).
 // uptime_ms is successful-read submission time unless documented otherwise.
 
+// Binary aai16.Envelope (sensor_telemetry.dht22), not JSON and not NUL-terminated, with
+// boot_id, sequence, the sensor's configuration generation, and acquired_us == uptime_us
+// (microseconds). Readings outside the DHT22 limits (-40..80 C, 0..100 %RH) or non-finite
+// are rejected with ESP_ERR_INVALID_ARG, counted as invalid, and never queued.
 esp_err_t mqtt_manager_publish_dht22(
     float temperature_c,
     float humidity_pct

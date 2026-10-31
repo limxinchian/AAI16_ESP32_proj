@@ -396,6 +396,21 @@ int main(int argc, char **argv)
         assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--dht22-bridge")) {
+        // Emit the exact bytes the real publisher hands to the SDK for one DHT22 reading
+        // (negative temperature, so the float sign survives), generation 7.
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        s_transactions.generation[SENSOR_DHT22] = 7;
+        clock_us = (INT64_C(1) << 54) + 5000123; // Exercise exact uint64 decoding.
+        assert(mqtt_manager_publish_dht22(-12.3f, 71.8f) == ESP_OK);
+        pump();
+        assert(publish_calls == 1 && last_qos == 0 && !strcmp(last_topic, DHT22_DATA_TOPIC));
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--config-bridge")) {
 #ifdef _WIN32
         _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
@@ -433,11 +448,15 @@ int main(int argc, char **argv)
     assert(mqtt_manager_publish_dht22(25, 50) == ESP_OK);
     assert(enqueue_calls == 0 && publish_calls == 0); // Sensor never invokes MQTT.
     pump();
-    cJSON *data = cJSON_Parse(last_payload);
-    assert(data && cJSON_GetObjectItem(data, "seq")->valueint == 2);
-    assert(cJSON_GetObjectItem(data, "uptime_ms")->valueint == 1234);
-    assert(!strcmp(cJSON_GetObjectItem(data, "boot_id")->valuestring, "12345678"));
-    cJSON_Delete(data);
+    // DHT22 telemetry is binary aai16.Envelope, not JSON; clock_us = 1234000.
+    aai16_Envelope dht = decode_last_event();
+    assert(dht.sequence == 2 && dht.boot_id == 0x12345678 && dht.generation == 0);
+    assert(dht.body.sensor_telemetry.sensor == aai16_SensorId_SENSOR_DHT22);
+    assert(dht.body.sensor_telemetry.acquired_us == 1234000 && dht.body.sensor_telemetry.uptime_us == 1234000);
+    assert(dht.body.sensor_telemetry.which_reading == aai16_SensorTelemetry_dht22_tag);
+    assert(dht.body.sensor_telemetry.reading.dht22.temperature_c == 25.0f);
+    assert(dht.body.sensor_telemetry.reading.dht22.humidity_pct == 50.0f);
+    cJSON *data;
     assert(last_qos == 0 && s_qos1_pubacked == 0);
     assert(s_stats[TX_DHT22].queued == 1 && s_stats[TX_DHT22].publish_ok == 1);
     assert(s_stats[TX_DHT22].enqueued == 0 && enqueue_calls == 0);
@@ -454,6 +473,21 @@ int main(int argc, char **argv)
     assert(cJSON_IsObject(cJSON_GetObjectItem(data, "magnetic_field_ut")));
     cJSON_Delete(data);
     assert(mqtt_manager_publish_dht22(NAN, 50) == ESP_ERR_INVALID_ARG);
+    // Datasheet limits: -40..80 C and 0..100 %RH. Outside is a failed read, counted invalid.
+    {
+        uint32_t invalid_before = s_stats[TX_DHT22].invalid, queued_before = s_stats[TX_DHT22].queued;
+        assert(mqtt_manager_publish_dht22(25, NAN) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_dht22(INFINITY, 50) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_dht22(-40.1f, 50) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_dht22(80.1f, 50) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_dht22(25, -0.1f) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_dht22(25, 100.1f) == ESP_ERR_INVALID_ARG);
+        assert(s_stats[TX_DHT22].invalid == invalid_before + 6 && s_stats[TX_DHT22].queued == queued_before);
+        // The limits themselves are valid readings.
+        assert(mqtt_manager_publish_dht22(-40, 0) == ESP_OK);
+        assert(mqtt_manager_publish_dht22(80, 100) == ESP_OK);
+        pump(); pump();
+    }
     assert(mqtt_manager_publish_gy511(INFINITY, 0, 0, 0, 0, 0) == ESP_ERR_INVALID_ARG);
     assert(mqtt_manager_publish_gy511(FLT_MAX, FLT_MAX, FLT_MAX,
         FLT_MAX, FLT_MAX, FLT_MAX) == ESP_ERR_INVALID_SIZE);

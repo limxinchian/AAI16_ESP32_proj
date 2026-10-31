@@ -230,6 +230,14 @@ class ProtocolTests(unittest.TestCase):
         bridge(raw(e), success=False)
         e = telemetry(pb.SENSOR_DHT22); e.sensor_telemetry.sensor = pb.SENSOR_GY511
         bridge(raw(e), success=False)
+        for temperature, humidity in ((-40, 0), (80, 100)):
+            e = telemetry(pb.SENSOR_DHT22)
+            e.sensor_telemetry.dht22.temperature_c, e.sensor_telemetry.dht22.humidity_pct = temperature, humidity
+            roundtrip(e)
+        for temperature, humidity in ((-40.5, 50), (80.5, 50), (25, -0.5), (25, 100.5), (float("nan"), 50), (25, float("inf"))):
+            e = telemetry(pb.SENSOR_DHT22)
+            e.sensor_telemetry.dht22.temperature_c, e.sensor_telemetry.dht22.humidity_pct = temperature, humidity
+            bridge(raw(e), success=False)
         for ppm in (399, 5001):
             e = telemetry(pb.SENSOR_MHZ1911A); e.sensor_telemetry.mhz1911a.co2_ppm = ppm
             bridge(raw(e), success=False)

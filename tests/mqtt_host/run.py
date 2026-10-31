@@ -134,6 +134,20 @@ assert t.hcsr04p.distance_cm == f32(42.1) and t.hcsr04p.echo_us == f32(2456.3)
 assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
 (output / 'hcsr04p.pb').write_bytes(wire)
 print(f'PASS: live C/nanopb HC-SR04P payload ({len(wire)} bytes) decoded by Python; exact float32, microsecond times, sequence/generation', flush=True)
+# DHT22 reading: bytes from the real C/nanopb publisher decoded by Python.
+wire = subprocess.check_output([str(binary), '--dht22-bridge'])
+message = pb.Envelope.FromString(wire)
+t = message.sensor_telemetry
+assert message.WhichOneof('body') == 'sensor_telemetry' and wire[:2] == b''
+assert message.protocol_version == 1 and message.boot_id == 0x12345678 and message.sequence == 1
+assert message.HasField('generation') and message.generation == 7
+assert not message.HasField('request_id') and not message.HasField('phase')
+assert t.sensor == pb.SENSOR_DHT22 and t.WhichOneof('reading') == 'dht22'
+assert t.acquired_us == t.uptime_us == (1 << 54) + 5000123
+assert t.dht22.temperature_c == f32(-12.3) and t.dht22.humidity_pct == f32(71.8)
+assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
+(output / 'dht22.pb').write_bytes(wire)
+print(f'PASS: live C/nanopb DHT22 payload ({len(wire)} bytes) decoded by Python; exact float32, negative temperature, exact uint64, sequence/generation', flush=True)
 roundtrips = 0
 maximum_request = maximum_ack = 0
 for sensor, (_, minimum, maximum) in SENSORS.items():

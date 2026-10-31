@@ -1373,33 +1373,56 @@ fail:
 // --------------------------------------------------
 // Publish DHT22 temperature and humidity
 // --------------------------------------------------
+// Binary aai16.Envelope.sensor_telemetry.dht22, never JSON. seq -> Envelope.sequence
+// (attempt count: rejected submissions still advance it), uptime_ms -> acquired_us and
+// uptime_us (microseconds; the reading is published as it is acquired). generation is the
+// sensor's committed configuration generation at submission.
+// Physical limits of the DHT22 (datasheet): -40..80 C, 0..100 %RH. Anything outside is a
+// failed read, not a measurement, so it is counted as invalid and never queued.
+#define DHT22_TEMP_MIN_C (-40.0f)
+#define DHT22_TEMP_MAX_C 80.0f
+#define DHT22_HUMIDITY_MIN_PCT 0.0f
+#define DHT22_HUMIDITY_MAX_PCT 100.0f
+_Static_assert(36 + aai16_SensorTelemetry_size < TX_PAYLOAD_SIZE, "DHT22 telemetry exceeds TX slot");
 
 esp_err_t mqtt_manager_publish_dht22(
     float temperature_c,
     float humidity_pct)
 {
     uint32_t seq = begin_attempt(TX_DHT22);
-    if (!isfinite(temperature_c) || !isfinite(humidity_pct)) {
+    if (!isfinite(temperature_c) || !isfinite(humidity_pct) ||
+        temperature_c < DHT22_TEMP_MIN_C || temperature_c > DHT22_TEMP_MAX_C ||
+        humidity_pct < DHT22_HUMIDITY_MIN_PCT || humidity_pct > DHT22_HUMIDITY_MAX_PCT) {
         count_event(&s_stats[TX_DHT22].invalid);
         return ESP_ERR_INVALID_ARG;
     }
-    tx_message_t message = {
-        .kind = TX_DHT22,
-        .created_ms = esp_timer_get_time() / 1000,
-    };
-    message.len = snprintf(
-        message.payload,
-        sizeof(message.payload),
-        "{\"sensor\":\"dht22\","
-        "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ","
-        "\"uptime_ms\":%" PRId64 ","
-        "\"temperature_c\":%.1f,"
-        "\"humidity_pct\":%.1f}",
-        s_boot_id, seq, message.created_ms,
-        temperature_c,
-        humidity_pct
-    );
+    int64_t now_us = esp_timer_get_time();
+    uint32_t generation;
+    portENTER_CRITICAL(&s_config_lock);
+    generation = s_transactions.generation[SENSOR_DHT22];
+    portEXIT_CRITICAL(&s_config_lock);
 
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_boot_id = e.has_sequence = e.has_generation = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.boot_id = s_boot_id; e.sequence = seq; e.generation = generation;
+    e.which_body = aai16_Envelope_sensor_telemetry_tag;
+    aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    t->has_sensor = t->has_acquired_us = t->has_uptime_us = true;
+    t->sensor = config_sensor_to_wire(SENSOR_DHT22);
+    t->acquired_us = t->uptime_us = (uint64_t)now_us;
+    t->which_reading = aai16_SensorTelemetry_dht22_tag;
+    t->reading.dht22.has_temperature_c = t->reading.dht22.has_humidity_pct = true;
+    t->reading.dht22.temperature_c = temperature_c;
+    t->reading.dht22.humidity_pct = humidity_pct;
+
+    tx_message_t message = {.kind = TX_DHT22, .created_ms = now_us / 1000};
+    size_t length = 0;
+    if (aai16_protocol_encode(&e, (uint8_t *)message.payload, sizeof(message.payload), &length) != CR(OK)) {
+        count_event(&s_stats[TX_DHT22].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    message.len = (int)length;
     return queue_message(&message);
 }
 
