@@ -381,6 +381,21 @@ int main(int argc, char **argv)
         assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--hcsr04p-bridge")) {
+        // Emit the exact bytes the real publisher hands to the SDK for one distance
+        // reading: acquired 0.5 s before the message is built, configuration generation 7.
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        s_transactions.generation[SENSOR_HCSR04P] = 7;
+        clock_us = INT64_C(99885041);
+        assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us - 500000) == ESP_OK);
+        distance_due(); service_hcsr04p_snapshot();
+        assert(publish_calls == 1 && last_qos == 0 && !strcmp(last_topic, HCSR04P_DATA_TOPIC));
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--config-bridge")) {
 #ifdef _WIN32
         _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);

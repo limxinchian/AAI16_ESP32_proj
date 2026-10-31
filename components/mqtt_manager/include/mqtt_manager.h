@@ -101,7 +101,10 @@ esp_err_t mqtt_manager_update_ld2450_snapshot(const ld2450_report_t *report,
 // eligible until consumed/replaced/expired, with its original timestamp intact.
 // seq counts consumed publication attempts, including offline/stale/SDK drops;
 // it starts at 1 per boot and wraps as uint32_t. Replacements, invalid updates
-// and busy deferrals do not advance seq. uptime_ms = acquired_us / 1000.
+// and busy deferrals do not advance seq. The payload is a binary aai16.Envelope
+// (sensor_telemetry.hcsr04p): acquired_us is this call's timestamp, uptime_us is
+// when the message is built, and Envelope.generation is the sensor's configuration
+// generation at this call. It is not JSON and not NUL-terminated.
 // ESP_OK means snapshot acceptance only. MQTT outcomes never alter sensor health.
 // Disabled handoffs return ESP_ERR_INVALID_STATE. Gate transitions cancel any
 // consumed attempt not yet admitted to the SDK (counted as cancelled).

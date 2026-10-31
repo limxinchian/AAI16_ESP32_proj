@@ -192,6 +192,7 @@ static int64_t s_radar_next_failure_log_us; // Publisher only.
 static struct {
     hcsr04p_reading_t reading;
     int64_t acquired_us;
+    uint32_t generation; // Configuration generation when the sample was handed over.
     bool pending;
 } s_hcsr04p;
 static uint32_t s_hcsr04p_updates, s_hcsr04p_coalesced, s_hcsr04p_invalid, s_hcsr04p_deferred;
@@ -479,7 +480,7 @@ esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
                                               int64_t acquired_us)
 {
     // The driver validates pulse/range before handoff. Also bound this API's
-    // inputs so non-finite numbers or invalid timestamps cannot reach JSON.
+    // inputs so non-finite numbers or invalid timestamps cannot reach the encoder.
     if (reading == NULL || !isfinite(reading->distance_cm) || !isfinite(reading->echo_us) ||
         reading->distance_cm < HCSR04P_MIN_CM || reading->distance_cm > HCSR04P_MAX_CM ||
         reading->echo_us <= 0 || reading->echo_us > HCSR04P_ECHO_TIMEOUT_MS * 1000 ||
@@ -487,6 +488,12 @@ esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
         count_event(&s_hcsr04p_invalid);
         return ESP_ERR_INVALID_ARG;
     }
+    // A reading keeps the generation it was acquired under, even if publication is
+    // delayed. Separate short critical section: never nested with s_stats_lock.
+    uint32_t generation;
+    portENTER_CRITICAL(&s_config_lock);
+    generation = s_transactions.generation[SENSOR_HCSR04P];
+    portEXIT_CRITICAL(&s_config_lock);
     portENTER_CRITICAL(&s_stats_lock);
     if (!s_hcsr04p_enabled) {
         portEXIT_CRITICAL(&s_stats_lock);
@@ -496,6 +503,7 @@ esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
     if (s_hcsr04p.pending) ++s_hcsr04p_coalesced;
     s_hcsr04p.reading = *reading;
     s_hcsr04p.acquired_us = acquired_us;
+    s_hcsr04p.generation = generation;
     s_hcsr04p.pending = true;
     portEXIT_CRITICAL(&s_stats_lock);
     return ESP_OK;
@@ -512,14 +520,31 @@ void mqtt_manager_commit_hcsr04p_enabled(bool enabled)
     portEXIT_CRITICAL(&s_stats_lock);
 }
 
-static int format_hcsr04p(char *payload, size_t capacity, const hcsr04p_reading_t *reading,
-                         int64_t acquired_us, uint32_t seq)
+// Binary aai16.Envelope.sensor_telemetry.hcsr04p, never JSON. The old JSON
+// "uptime_ms" was the acquisition time: it is acquired_us here, in microseconds;
+// uptime_us is when this message was built. seq -> Envelope.sequence (consumed
+// publication attempts). distance_cm and echo_us are IEEE-754 floats on the wire,
+// not the 0.1-rounded decimal text. Returns the encoded length, or -1 on failure.
+static int encode_hcsr04p(uint8_t *data, size_t capacity, const hcsr04p_reading_t *reading,
+                          int64_t acquired_us, int64_t uptime_us, uint32_t generation, uint32_t seq)
 {
-    int len = snprintf(payload, capacity,
-        "{\"sensor\":\"hcsr04p\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
-        ",\"uptime_ms\":%" PRId64 ",\"distance_cm\":%.1f,\"echo_us\":%.1f}",
-        s_boot_id, seq, acquired_us / 1000, reading->distance_cm, reading->echo_us);
-    return len < 0 || (size_t)len >= capacity ? -1 : len;
+    if (acquired_us < 0 || uptime_us < acquired_us) return -1;
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_boot_id = e.has_sequence = e.has_generation = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.boot_id = s_boot_id; e.sequence = seq; e.generation = generation;
+    e.which_body = aai16_Envelope_sensor_telemetry_tag;
+    aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    t->has_sensor = t->has_acquired_us = t->has_uptime_us = true;
+    t->sensor = config_sensor_to_wire(SENSOR_HCSR04P);
+    t->acquired_us = (uint64_t)acquired_us;
+    t->uptime_us = (uint64_t)uptime_us;
+    t->which_reading = aai16_SensorTelemetry_hcsr04p_tag;
+    t->reading.hcsr04p.has_distance_cm = t->reading.hcsr04p.has_echo_us = true;
+    t->reading.hcsr04p.distance_cm = reading->distance_cm;
+    t->reading.hcsr04p.echo_us = reading->echo_us;
+    size_t length = 0;
+    return aai16_protocol_encode(&e, data, capacity, &length) == aai16_ResultCode_RESULT_OK ? (int)length : -1;
 }
 
 // Publisher task only. Slow SDK calls hold a local copy, never the mailbox lock.
@@ -533,7 +558,7 @@ static void service_hcsr04p_snapshot(void)
                 (s_event_queue != NULL && uxQueueMessagesWaiting(s_event_queue));
     hcsr04p_reading_t reading;
     int64_t acquired_us;
-    uint32_t epoch;
+    uint32_t epoch, generation;
     portENTER_CRITICAL(&s_stats_lock);
     if (!s_hcsr04p_enabled) {
         portEXIT_CRITICAL(&s_stats_lock);
@@ -548,6 +573,7 @@ static void service_hcsr04p_snapshot(void)
     epoch = s_hcsr04p_epoch;
     reading = s_hcsr04p.reading;
     acquired_us = s_hcsr04p.acquired_us;
+    generation = s_hcsr04p.generation;
     s_hcsr04p.pending = false;
     portEXIT_CRITICAL(&s_stats_lock);
     if (!pending) return;
@@ -561,8 +587,9 @@ static void service_hcsr04p_snapshot(void)
         count_event(&stats->offline);
         return;
     }
-    char payload[HCSR04P_PAYLOAD_SIZE];
-    int len = format_hcsr04p(payload, sizeof(payload), &reading, acquired_us, seq);
+    char payload[HCSR04P_PAYLOAD_SIZE]; // Binary: length-delimited, never strlen().
+    int len = encode_hcsr04p((uint8_t *)payload, sizeof(payload), &reading, acquired_us,
+                             esp_timer_get_time(), generation, seq);
     if (len < 0) {
         count_event(&stats->invalid); // Serialization failure, separate from invalid updates.
         return;

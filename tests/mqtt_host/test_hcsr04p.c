@@ -50,18 +50,34 @@ static void distance_due(void)
     if (clock_us < s_hcsr04p_next_publish_us) clock_us = s_hcsr04p_next_publish_us;
 }
 
-static void check_distance_json(const hcsr04p_reading_t *reading, int64_t acquired_us, uint32_t seq)
+// Decode a captured HC-SR04P payload (binary aai16.Envelope, never JSON).
+static aai16_Envelope decode_distance(const char *bytes, int length)
+{
+    aai16_Envelope e;
+    assert(length > 0 && length < HCSR04P_PAYLOAD_SIZE);
+    assert(aai16_protocol_decode((const uint8_t *)bytes, (size_t)length, &e) == aai16_ResultCode_RESULT_OK);
+    assert(e.has_protocol_version && e.protocol_version == AAI16_PROTOCOL_VERSION);
+    assert(e.which_body == aai16_Envelope_sensor_telemetry_tag);
+    assert(e.has_boot_id && e.has_sequence && e.has_generation && !e.has_request_id && !e.has_phase);
+    const aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    assert(t->sensor == aai16_SensorId_SENSOR_HCSR04P && t->which_reading == aai16_SensorTelemetry_hcsr04p_tag);
+    assert(t->reading.hcsr04p.has_distance_cm && t->reading.hcsr04p.has_echo_us);
+    return e;
+}
+
+// The message just handed to the SDK carries this reading, acquisition time and sequence.
+// Floats are exact on the wire (the JSON rounded them to 0.1).
+static void check_distance_message(const hcsr04p_reading_t *reading, int64_t acquired_us, uint32_t seq)
 {
     assert(!strcmp(last_topic, HCSR04P_DATA_TOPIC) && last_qos == 0);
-    cJSON *data = cJSON_Parse(last_payload);
-    assert(data && cJSON_GetArraySize(data) == 6);
-    assert(!strcmp(cJSON_GetObjectItem(data, "sensor")->valuestring, "hcsr04p"));
-    assert(!strcmp(cJSON_GetObjectItem(data, "boot_id")->valuestring, "12345678"));
-    assert(cJSON_GetObjectItem(data, "seq")->valuedouble == seq);
-    assert(cJSON_GetObjectItem(data, "uptime_ms")->valuedouble == acquired_us / 1000);
-    assert(fabs(cJSON_GetObjectItem(data, "distance_cm")->valuedouble - reading->distance_cm) < 0.051);
-    assert(fabs(cJSON_GetObjectItem(data, "echo_us")->valuedouble - reading->echo_us) < 0.051);
-    cJSON_Delete(data);
+    aai16_Envelope e = decode_distance(last_payload, last_payload_len);
+    const aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    assert(e.boot_id == 0x12345678 && e.sequence == seq);
+    assert(e.generation == s_transactions.generation[SENSOR_HCSR04P]);
+    assert(t->acquired_us == (uint64_t)acquired_us);
+    assert(t->uptime_us >= t->acquired_us && t->uptime_us <= (uint64_t)clock_us);
+    assert(t->reading.hcsr04p.distance_cm == reading->distance_cm);
+    assert(t->reading.hcsr04p.echo_us == reading->echo_us);
 }
 
 static void distance_age_during_format(void) { clock_us += HCSR04P_MAX_AGE_US; }
@@ -93,28 +109,42 @@ static void test_hcsr04p_telemetry(void)
     assert(publish_calls == calls && stats->attempts == 0); // No fabricated initial sample.
 
     char payload[HCSR04P_PAYLOAD_SIZE];
-    int len = format_hcsr04p(payload, sizeof(payload), &distance_fixture, 25000999, 1);
-    assert(len > 0 && !strcmp(payload,
-        "{\"sensor\":\"hcsr04p\",\"boot_id\":\"12345678\",\"seq\":1,\"uptime_ms\":25000,\"distance_cm\":42.1,\"echo_us\":2456.3}"));
+    int len = encode_hcsr04p((uint8_t *)payload, sizeof(payload), &distance_fixture, 25000999, 25001500, 3, 1);
+    assert(len > 0);
+    aai16_Envelope e = decode_distance(payload, len);
+    const aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    assert(e.boot_id == 0x12345678 && e.sequence == 1 && e.generation == 3);
+    assert(t->acquired_us == 25000999 && t->uptime_us == 25001500); // Microseconds, not truncated to ms.
+    assert(t->reading.hcsr04p.distance_cm == 42.1f && t->reading.hcsr04p.echo_us == 2456.3f);
+    // Largest values: maximum floats, 64-bit times and 32-bit counters stay bounded.
     hcsr04p_reading_t largest = {.distance_cm = HCSR04P_MAX_CM, .echo_us = HCSR04P_ECHO_TIMEOUT_MS * 1000};
-    len = format_hcsr04p(payload, sizeof(payload), &largest, INT64_MAX, UINT32_MAX);
+    len = encode_hcsr04p((uint8_t *)payload, sizeof(payload), &largest, INT64_MAX, INT64_MAX, UINT32_MAX, UINT32_MAX);
     assert(len > 0 && len < HCSR04P_PAYLOAD_SIZE && len < TX_PAYLOAD_SIZE);
-    assert(strstr(payload, "\"seq\":4294967295") && strstr(payload, "\"uptime_ms\":9223372036854775"));
-    // Every truncation boundary, exact fit (including NUL), and guard byte.
+    e = decode_distance(payload, len);
+    t = &e.body.sensor_telemetry;
+    assert(e.sequence == UINT32_MAX && e.generation == UINT32_MAX);
+    assert(t->acquired_us == INT64_MAX && t->uptime_us == INT64_MAX);
+    assert(t->reading.hcsr04p.distance_cm == HCSR04P_MAX_CM && t->reading.hcsr04p.echo_us == HCSR04P_ECHO_TIMEOUT_MS * 1000);
+    // Every capacity below the encoded length fails; an exact fit succeeds. A guard
+    // byte past the capacity is never written. Binary: no trailing NUL is required.
     for (size_t capacity = 0; capacity <= (size_t)len + 1; ++capacity) {
         unsigned char guarded[HCSR04P_PAYLOAD_SIZE + 1];
         memset(guarded, 0xa5, sizeof(guarded));
-        int n = format_hcsr04p((char *)guarded, capacity, &largest, INT64_MAX, UINT32_MAX);
-        assert(n == (capacity <= (size_t)len ? -1 : len));
+        int n = encode_hcsr04p(guarded, capacity, &largest, INT64_MAX, INT64_MAX, UINT32_MAX, UINT32_MAX);
+        assert(n == (capacity < (size_t)len ? -1 : len));
         assert(guarded[capacity] == 0xa5);
-        if (capacity) assert(guarded[capacity - 1] == 0);
     }
+    // Inconsistent times are refused before encoding.
+    assert(encode_hcsr04p((uint8_t *)payload, sizeof(payload), &distance_fixture, -1, 0, 0, 0) == -1);
+    assert(encode_hcsr04p((uint8_t *)payload, sizeof(payload), &distance_fixture, 10, 9, 0, 0) == -1);
     uint32_t boot = s_boot_id;
     s_boot_id = 0xabcdef;
-    assert(format_hcsr04p(payload, sizeof(payload), &distance_fixture, 0, 0) > 0);
-    assert(strstr(payload, "\"boot_id\":\"00abcdef\"") && strstr(payload, "\"uptime_ms\":0"));
+    len = encode_hcsr04p((uint8_t *)payload, sizeof(payload), &distance_fixture, 0, 0, 0, 0);
+    assert(len > 0);
+    e = decode_distance(payload, len);
+    assert(e.boot_id == 0xabcdef && e.body.sensor_telemetry.acquired_us == 0 && e.sequence == 0);
     s_boot_id = boot;
-    puts("PASS: HC-SR04P exact JSON, boot/sequence/timestamp/units, precision and all buffer boundaries");
+    puts("PASS: HC-SR04P Protobuf encode/decode, boot/sequence/generation/timestamp, exact floats and all buffer boundaries");
 
     // Five successful measurements per publication; mailbox owns a value copy.
     uint32_t coalesced = s_hcsr04p_coalesced;
@@ -134,7 +164,7 @@ static void test_hcsr04p_telemetry(void)
         assert(publish_calls == calls + (i == 4));
     }
     assert(stats->attempts == 1 && s_hcsr04p_coalesced == coalesced + 4);
-    check_distance_json(&expected, acquired, 1);
+    check_distance_message(&expected, acquired, 1);
     calls = publish_calls;
     for (unsigned i = 0; i < 3; ++i) { distance_due(); pump(); }
     assert(publish_calls == calls); // Consumed measurement is never repeated.
@@ -155,12 +185,12 @@ static void test_hcsr04p_telemetry(void)
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, clock_us + 1) == ESP_ERR_INVALID_ARG);
     assert(s_hcsr04p_invalid == invalid_updates + 15 && s_hcsr04p_updates == updates);
     assert(stats->attempts == seq - 1 && s_hcsr04p.acquired_us == acquired);
-    distance_due(); pump(); check_distance_json(&expected, acquired, seq);
+    distance_due(); pump(); check_distance_message(&expected, acquired, seq);
 
     // Exactly 2000 ms is stale; 1999.999 ms is still eligible at admission.
     distance_due(); acquired = clock_us - HCSR04P_MAX_AGE_US + 1;
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, acquired) == ESP_OK);
-    seq = stats->attempts + 1; pump(); check_distance_json(&expected, acquired, seq);
+    seq = stats->attempts + 1; pump(); check_distance_message(&expected, acquired, seq);
     distance_due(); calls = publish_calls;
     uint32_t stale = stats->stale;
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, clock_us - HCSR04P_MAX_AGE_US) == ESP_OK);
@@ -169,6 +199,19 @@ static void test_hcsr04p_telemetry(void)
     timer_hook = distance_age_during_format; timer_hook_countdown = 2;
     service_hcsr04p_snapshot();
     assert(!timer_hook && publish_calls == calls && stats->stale == stale + 2);
+
+    // A reading keeps the generation it was acquired under, even when a configuration
+    // commit advances the sensor's generation before the reading is published.
+    distance_due(); acquired = clock_us;
+    uint32_t generation_before = s_transactions.generation[SENSOR_HCSR04P];
+    assert(mqtt_manager_update_hcsr04p_snapshot(&expected, acquired) == ESP_OK);
+    s_transactions.generation[SENSOR_HCSR04P] = generation_before + 1;
+    seq = stats->attempts + 1; pump();
+    assert(!strcmp(last_topic, HCSR04P_DATA_TOPIC));
+    e = decode_distance(last_payload, last_payload_len);
+    assert(e.generation == generation_before && e.sequence == seq);
+    s_transactions.generation[SENSOR_HCSR04P] = generation_before;
+    calls = publish_calls; // This block published once; later checks count from here.
 
     // Disconnect drops one consumed attempt per interval; reconnect has no history.
     event(MQTT_EVENT_DISCONNECTED);
@@ -186,7 +229,7 @@ static void test_hcsr04p_telemetry(void)
     assert(publish_calls == calls && stats->stale == stale + 3);
     distance_due(); acquired = clock_us;
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, acquired) == ESP_OK);
-    seq = stats->attempts + 1; pump(); check_distance_json(&expected, acquired, seq);
+    seq = stats->attempts + 1; pump(); check_distance_message(&expected, acquired, seq);
     distance_due(); assert(mqtt_manager_update_hcsr04p_snapshot(&expected, clock_us) == ESP_OK);
     timer_hook = distance_disconnect_during_format; timer_hook_countdown = 2;
     calls = publish_calls; service_hcsr04p_snapshot();
@@ -221,7 +264,7 @@ static void test_hcsr04p_telemetry(void)
     outbox_size = OUTBOX_LIMIT_BYTES;
     distance_due(); acquired = clock_us;
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, acquired) == ESP_OK);
-    enqueues = enqueue_calls; pump(); check_distance_json(&expected, acquired, seq + 1);
+    enqueues = enqueue_calls; pump(); check_distance_message(&expected, acquired, seq + 1);
     assert(outbox_size == OUTBOX_LIMIT_BYTES && enqueue_calls == enqueues);
     outbox_size = 0;
 
@@ -231,7 +274,7 @@ static void test_hcsr04p_telemetry(void)
     assert(mqtt_manager_update_ld2450_snapshot(&radar, acquired) == ESP_OK);
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, acquired) == ESP_OK);
     uint32_t radar_successes = s_stats[TX_LD2450].publish_ok;
-    seq = stats->attempts + 1; pump(); check_distance_json(&expected, acquired, seq);
+    seq = stats->attempts + 1; pump(); check_distance_message(&expected, acquired, seq);
     assert(s_stats[TX_LD2450].publish_ok == radar_successes + 1);
     assert(!stats->queued && !stats->queue_full && !stats->enqueued && !stats->outbox_full);
     puts("PASS: HC-SR04P ACK/RFID priority, full queues/outbox, DHT22/GY511/LD2450 coexistence");
@@ -241,12 +284,12 @@ static void test_hcsr04p_telemetry(void)
     assert(mqtt_manager_update_hcsr04p_snapshot(&expected, acquired) == ESP_OK);
     publish_hook = distance_reader_during_publish;
     seq = stats->attempts + 1; service_hcsr04p_snapshot();
-    check_distance_json(&expected, acquired, seq);
+    check_distance_message(&expected, acquired, seq);
     assert(stats->max_tx_call_us == 5020000 && s_hcsr04p.pending);
     acquired = s_hcsr04p.acquired_us; seq = stats->attempts + 1;
     calls = publish_calls; pump();
     assert(publish_calls == calls + 1); // Latest only; no five-second catch-up burst.
-    check_distance_json(&distance_fixture, acquired, seq);
+    check_distance_message(&distance_fixture, acquired, seq);
 
     // Timeout/invalid acquisitions create no snapshot. A prior success stays
     // eligible until 2 s, and keeps its acquisition time even while degraded.
@@ -258,7 +301,7 @@ static void test_hcsr04p_telemetry(void)
     sensor_status_t status;
     assert(sensor_status_get(SENSOR_HCSR04P, &status) && status.state == SENSOR_DEGRADED);
     assert(status.read_failures == 2 && !status.read_successes);
-    seq = stats->attempts + 1; pump(); check_distance_json(&expected, acquired, seq);
+    seq = stats->attempts + 1; pump(); check_distance_message(&expected, acquired, seq);
     calls = publish_calls; run_distance_reader(400000, ESP_ERR_INVALID_RESPONSE);
     assert(s_hcsr04p_updates == updates && !s_hcsr04p.pending);
     distance_due(); pump(); assert(publish_calls == calls);
@@ -327,7 +370,7 @@ static void test_hcsr04p_config(void)
     service_hcsr04p_snapshot();
     assert(!timer_hook && publish_calls == calls && stats->cancelled == cancelled + 1 && s_hcsr04p.pending);
     int64_t acquired = s_hcsr04p.acquired_us;
-    seq = stats->attempts + 1; distance_due(); pump(); check_distance_json(&distance_fixture, acquired, seq);
+    seq = stats->attempts + 1; distance_due(); pump(); check_distance_message(&distance_fixture, acquired, seq);
     distance_due();
     assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, clock_us) == ESP_OK);
     calls = publish_calls; publish_hook = distance_disable_in_sdk; pump();
@@ -338,7 +381,7 @@ static void test_hcsr04p_config(void)
     for (unsigned i = 0; i < 3; ++i) {
         distance_due(); acquired = clock_us;
         assert(mqtt_manager_update_hcsr04p_snapshot(&distance_fixture, acquired) == ESP_OK);
-        seq = stats->attempts + 1; pump(); check_distance_json(&distance_fixture, acquired, seq);
+        seq = stats->attempts + 1; pump(); check_distance_message(&distance_fixture, acquired, seq);
         calls = publish_calls;
         for (unsigned quiet = 0; quiet < 9; ++quiet) { distance_due(); pump(); }
         assert(publish_calls == calls);

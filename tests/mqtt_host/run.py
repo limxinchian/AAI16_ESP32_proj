@@ -118,6 +118,22 @@ for uid_hex in ('5a2dfd03', '5a2dfd030080ff', '5a2dfd030080ff0110ab'):
     assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
     (output / f'rc522_{len(uid_hex) // 2}.pb').write_bytes(wire)
 print('PASS: 3 live C/nanopb RC522 payloads decoded by Python; UID 4/7/10 incl. embedded NUL, exact uint64, sequence/generation', flush=True)
+# HC-SR04P distance: bytes from the real C/nanopb mailbox publisher decoded by Python.
+import struct
+def f32(x): return struct.unpack('<f', struct.pack('<f', x))[0]  # The wire carries float32.
+wire = subprocess.check_output([str(binary), '--hcsr04p-bridge'])
+message = pb.Envelope.FromString(wire)
+t = message.sensor_telemetry
+assert message.WhichOneof('body') == 'sensor_telemetry' and wire[:2] == b''
+assert message.protocol_version == 1 and message.boot_id == 0x12345678 and message.sequence == 1
+assert message.HasField('generation') and message.generation == 7
+assert not message.HasField('request_id') and not message.HasField('phase')
+assert t.sensor == pb.SENSOR_HCSR04P and t.WhichOneof('reading') == 'hcsr04p'
+assert t.acquired_us == 99385041 and t.uptime_us == 99885041  # Acquired 0.5 s before building.
+assert t.hcsr04p.distance_cm == f32(42.1) and t.hcsr04p.echo_us == f32(2456.3)
+assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
+(output / 'hcsr04p.pb').write_bytes(wire)
+print(f'PASS: live C/nanopb HC-SR04P payload ({len(wire)} bytes) decoded by Python; exact float32, microsecond times, sequence/generation', flush=True)
 roundtrips = 0
 maximum_request = maximum_ack = 0
 for sensor, (_, minimum, maximum) in SENSORS.items():
