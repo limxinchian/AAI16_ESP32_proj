@@ -7,9 +7,9 @@ Third sensor-telemetry migration (after [RC522](protobuf_rc522_telemetry.md) and
 topic must use the schema decoder.
 
 **Status.** Host tests pass (C encoder, C decoder, independent Python decoder) and the full firmware
-image builds for ESP32-S3 on ESP-IDF 6.1. **Not yet done:** a captured and decoded DHT22 message from the
-board. The DHT22 has to be plugged into GPIO6 and the board powered; see
-[Hardware status](#hardware-status).
+image builds for ESP32-S3 on ESP-IDF 6.1. **Verified on the board** in MQTTX (one decoded message, below),
+but the message was not compared with the serial `DATA` line, and a later boot could not read the sensor at
+all; see [Hardware status](#hardware-status).
 
 ## Wire contract
 
@@ -101,15 +101,31 @@ Caveats on how these results were obtained, so they can be reproduced honestly:
 
 ## Hardware status
 
-Not yet verified on the board. The DHT22 was unplugged or reporting degraded at the last serial logs, so no
-message has been captured. To record:
+**Observed on the board (2026-10-31, 16:38):** MQTTX, schema `aai16.proto`, decoded one message from
+`aai16/sensors/dht22/data`:
 
-1. DHT22 data pin on GPIO6 (plus power and ground), board powered and on the demo network.
-2. Serial: `dht22   | DATA | temp=... humidity=...` lines and `dht22 | HEALTH` with `ok_total` rising.
-3. A decoded message on `aai16/sensors/dht22/data` in MQTTX (or `mosquitto_sub`), with `temperature_c` and
-   `humidity_pct` close to the serial `DATA` values, and `boot_id` equal to the boot log.
+| Field | Value |
+| --- | --- |
+| `protocol_version`, `generation` | 1, 0 |
+| `boot_id` | 2480712220 (`0x93DCAA1C`) |
+| `sequence` | 70 |
+| `sensor` | `SENSOR_DHT22` |
+| `acquired_us` = `uptime_us` | 140641059 (140.6 s after boot) |
+| `temperature_c` | 30 |
+| `humidity_pct` | 73.30000305175781 (the float32 nearest 73.3) |
 
-In MQTTX the float32 values appear with their binary-float digits (for example 30.5 is exact, 71.8 shows as
+Sequence 70 at 140.6 s matches the 2000 ms period. Not recorded: the serial `DATA` line for the same
+reading (so temperature and humidity were not compared with the firmware's own log), and any message other
+than this one.
+
+**Later, not working:** in a later boot (`boot_id` 3169609533, firmware `81ab8cd`) the DHT22 never produced a
+valid read: `reads_total=31 ok_total=0 failed_total=31`, every one `ESP_ERR_INVALID_RESPONSE`, each failing
+in under 2 ms. The publisher only runs after a successful read, so nothing was published (the broker showed
+the radar, MAX6675 and HC-SR04P topics but no DHT22). That points at the sensor's wiring or power on GPIO6
+(for example a wire moved while rewiring other sensors); the cause has not been confirmed. The fix is to
+reseat VCC, GND and DATA and look for `dht22   | DATA | temp=...` in the serial log.
+
+In MQTTX the float32 values appear with their binary-float digits (30.5 is exact, 71.8 shows as
 71.80000305175781) and the 64-bit times as strings.
 
 ## Reading the messages

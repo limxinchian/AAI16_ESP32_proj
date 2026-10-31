@@ -8,8 +8,8 @@ The JSON text is removed from the firmware. Existing JSON-only subscribers of th
 decoder **and** adapt to the three content changes below.
 
 **Status.** Host tests pass (C encoder, C decoder, independent Python decoder) and the full firmware image
-builds for ESP32-S3 on ESP-IDF 6.1. **Not yet done:** a captured and decoded radar message from the board; see
-[Hardware status](#hardware-status).
+builds for ESP32-S3 on ESP-IDF 6.1. **Verified on the board:** live radar messages were captured from the
+broker and decoded with the project schema; see [Hardware status](#hardware-status).
 
 ## What subscribers must change
 
@@ -116,18 +116,25 @@ The worst-case and buffer-boundary tests now test the Protobuf encoder.
 
 ## Hardware status
 
-Not yet verified on the board. An earlier serial log from this project showed
-`ld2450 | ERROR | No valid report within 5000 ms`, so the radar's UART link (TX GPIO17, RX GPIO18, 256000 baud,
-radar powered) needs to be healthy before any message appears. To record:
+First boot of this build: the radar produced no data at all (`ld2450 | HEALTH | frames_total=0
+rx_bytes_total=0`, `No valid report within 5000 ms`, `radar_snapshot_updates=0`), so nothing was published.
+That was the radar's power or UART wiring, not the message format: the same error appeared in an earlier log
+before this change. After the radar wiring was corrected (what was changed was not recorded), data flowed.
 
-1. Serial: `ld2450 | DATA` lines and `ld2450 | HEALTH` with frames received rising.
-2. A decoded message on `aai16/sensors/ld2450/data` in MQTTX (or `mosquitto_sub`) with the person standing in
-   front of the radar: at least one slot with `present = true`, `x_mm`/`y_mm` matching the serial values, and
-   `boot_id` equal to the boot log.
-3. Move away: the slot goes to `present = false` with zeros.
+**Observed on the board (2026-10-31):** a Python subscriber on the local Mosquitto broker captured
+`aai16/sensors/ld2450/data` for 12 s: **12 messages (1 per second, the default period)**, decoded with
+`tools/protocol/generated/aai16_pb2.py`. One of them:
 
-In MQTTX the 64-bit times appear as strings (as seen for the RC522 messages); I have not yet seen how it
-displays the signed `x_mm`/`y_mm` values, so check them against the serial output.
+| Field | Value |
+| --- | --- |
+| `boot_id`, `generation`, `sequence` | 3169609533, 0, 161 |
+| `acquired_us`, `uptime_us` | 162057961, 162134936 (message built 77 ms after acquisition) |
+| slot 1 | present, x -23, y 246, speed 0, resolution 360 |
+| slot 2 | present, x -805, y 1773, speed 24, resolution 360 |
+| slot 3 | not present, all zero |
+
+Not recorded: a comparison against the serial `ld2450 | DATA` lines or a physical measurement of where the
+targets were, a message with zero or three targets, and how MQTTX displays the signed `x_mm`/`y_mm` values.
 
 ## Reading the messages
 
