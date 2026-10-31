@@ -396,6 +396,21 @@ int main(int argc, char **argv)
         assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--max6675-bridge")) {
+        // Emit the exact bytes the real publisher hands to the SDK for one thermocouple
+        // reading (the top of the sensor's range), generation 7, 64-bit uptime.
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        s_transactions.generation[SENSOR_MAX6675] = 7;
+        clock_us = (INT64_C(1) << 54) + 5000123; // Exercise exact uint64 decoding.
+        assert(mqtt_manager_publish_max6675(1023.75f) == ESP_OK);
+        pump();
+        assert(publish_calls == 1 && last_qos == 0 && !strcmp(last_topic, MAX6675_DATA_TOPIC));
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--mhz1911a-bridge")) {
         // Emit the exact bytes the real publisher hands to the SDK for one CO2 reading:
         // acquired 0.5 s before the message is built, configuration generation 7.
@@ -619,11 +634,33 @@ int main(int argc, char **argv)
     data = cJSON_Parse(last_payload);
     assert(data && cJSON_GetObjectItem(data, "pressure_hpa")->valuedouble == 1013.25);
     cJSON_Delete(data);
+    // MAX6675 telemetry is binary aai16.Envelope, not JSON.
+    int64_t thermo_time_us = clock_us; // pump() advances the test clock.
     assert(mqtt_manager_publish_max6675(123.25f) == ESP_OK); pump();
     assert(!strcmp(last_topic, MAX6675_DATA_TOPIC) && last_qos == 0);
-    data = cJSON_Parse(last_payload);
-    assert(data && cJSON_GetObjectItem(data, "temperature_c")->valuedouble == 123.25);
-    cJSON_Delete(data);
+    aai16_Envelope thermo = decode_last_event();
+    assert(thermo.boot_id == 0x12345678);
+    assert(thermo.generation == s_transactions.generation[SENSOR_MAX6675]);
+    assert(thermo.sequence == 1);
+    assert(thermo.body.sensor_telemetry.sensor == aai16_SensorId_SENSOR_MAX6675);
+    assert(thermo.body.sensor_telemetry.acquired_us == (uint64_t)thermo_time_us);
+    assert(thermo.body.sensor_telemetry.uptime_us == (uint64_t)thermo_time_us);
+    assert(thermo.body.sensor_telemetry.which_reading == aai16_SensorTelemetry_max6675_tag);
+    assert(thermo.body.sensor_telemetry.reading.max6675.temperature_c == 123.25f);
+    // The sensor reports 0..1023.75 C (12 bits at 0.25 C). Outside, or non-finite, is a failed
+    // read: counted invalid, never queued. The limits themselves are valid readings.
+    {
+        uint32_t invalid_before = s_stats[TX_MAX6675].invalid, queued_before = s_stats[TX_MAX6675].queued;
+        assert(mqtt_manager_publish_max6675(NAN) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_max6675(INFINITY) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_max6675(-0.25f) == ESP_ERR_INVALID_ARG);
+        assert(mqtt_manager_publish_max6675(1024.0f) == ESP_ERR_INVALID_ARG);
+        assert(s_stats[TX_MAX6675].invalid == invalid_before + 4 && s_stats[TX_MAX6675].queued == queued_before);
+        assert(mqtt_manager_publish_max6675(0.0f) == ESP_OK); pump();
+        assert(decode_last_event().body.sensor_telemetry.reading.max6675.temperature_c == 0.0f);
+        assert(mqtt_manager_publish_max6675(1023.75f) == ESP_OK); pump();
+        assert(decode_last_event().body.sensor_telemetry.reading.max6675.temperature_c == 1023.75f);
+    }
     test_motion_telemetry();
     for (int i = 0; i < TX_KIND_COUNT; i++) {
         tx_stats_t *s = &s_stats[i];

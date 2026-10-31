@@ -235,7 +235,8 @@ static aai16_ResultCode telemetry_validate(const aai16_SensorTelemetry *t)
     case S(MAX6675): {
         const aai16_Max6675Reading *r = &t->reading.max6675;
         REQUIRE(r->has_temperature_c);
-        return isfinite(r->temperature_c) ? R(OK) : R(OUT_OF_RANGE);
+        return isfinite(r->temperature_c) && r->temperature_c >= 0.0f && r->temperature_c <= 1023.75f ?
+               R(OK) : R(OUT_OF_RANGE);
     }
     default: return R(UNSUPPORTED_SENSOR);
     }

@@ -68,6 +68,11 @@ esp_err_t mqtt_manager_publish_bme280(
 
 // Same zero-wait QoS 0 path as the other polled sensors. Thermocouple-open and
 // framing faults are read failures in Sensor Status, never published as 0 degC.
+// The payload is a binary aai16.Envelope (sensor_telemetry.max6675), not JSON and not
+// NUL-terminated, with boot_id, sequence, the sensor's configuration generation, and
+// acquired_us == uptime_us (microseconds). The sensor reports 0..1023.75 degC; a value
+// outside that range or non-finite returns ESP_ERR_INVALID_ARG, is counted invalid, and
+// is never queued.
 esp_err_t mqtt_manager_publish_max6675(float temperature_c);
 
 // Call once per presentation, not per poll. Copies 4/7/10-byte UIDs. The payload

@@ -1715,27 +1715,49 @@ esp_err_t mqtt_manager_publish_bme280(
 }
 
 
+// Binary aai16.Envelope.sensor_telemetry.max6675, never JSON. seq -> Envelope.sequence
+// (attempt count: rejected submissions still advance it), uptime_ms -> acquired_us and
+// uptime_us (microseconds; the reading is published as it is acquired). generation is the
+// sensor's committed configuration generation at submission. temperature_c is an IEEE-754
+// float on the wire (the JSON rounded to 2 decimals; every 0.25 C step is exact).
+// The MAX6675 reports a 12-bit count at 0.25 C, so real readings are 0..1023.75 C.
+// Anything outside (or non-finite) is a failed read, counted as invalid and never queued.
+#define MAX6675_TEMP_MIN_C 0.0f
+#define MAX6675_TEMP_MAX_C 1023.75f
+_Static_assert(36 + aai16_SensorTelemetry_size < TX_PAYLOAD_SIZE, "MAX6675 telemetry exceeds TX slot");
+
 esp_err_t mqtt_manager_publish_max6675(float temperature_c)
 {
     uint32_t seq = begin_attempt(TX_MAX6675);
-    if (!isfinite(temperature_c)) {
+    if (!isfinite(temperature_c) || temperature_c < MAX6675_TEMP_MIN_C || temperature_c > MAX6675_TEMP_MAX_C) {
         count_event(&s_stats[TX_MAX6675].invalid);
         return ESP_ERR_INVALID_ARG;
     }
-    tx_message_t message = {
-        .kind = TX_MAX6675,
-        .created_ms = esp_timer_get_time() / 1000,
-    };
-    message.len = snprintf(
-        message.payload,
-        sizeof(message.payload),
-        "{\"sensor\":\"max6675\","
-        "\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32 ","
-        "\"uptime_ms\":%" PRId64 ","
-        "\"temperature_c\":%.2f}",
-        s_boot_id, seq, message.created_ms,
-        temperature_c
-    );
+    int64_t now_us = esp_timer_get_time();
+    uint32_t generation;
+    portENTER_CRITICAL(&s_config_lock);
+    generation = s_transactions.generation[SENSOR_MAX6675];
+    portEXIT_CRITICAL(&s_config_lock);
 
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_boot_id = e.has_sequence = e.has_generation = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.boot_id = s_boot_id; e.sequence = seq; e.generation = generation;
+    e.which_body = aai16_Envelope_sensor_telemetry_tag;
+    aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    t->has_sensor = t->has_acquired_us = t->has_uptime_us = true;
+    t->sensor = config_sensor_to_wire(SENSOR_MAX6675);
+    t->acquired_us = t->uptime_us = (uint64_t)now_us;
+    t->which_reading = aai16_SensorTelemetry_max6675_tag;
+    t->reading.max6675.has_temperature_c = true;
+    t->reading.max6675.temperature_c = temperature_c;
+
+    tx_message_t message = {.kind = TX_MAX6675, .created_ms = now_us / 1000};
+    size_t length = 0;
+    if (aai16_protocol_encode(&e, (uint8_t *)message.payload, sizeof(message.payload), &length) != CR(OK)) {
+        count_event(&s_stats[TX_MAX6675].invalid);
+        return ESP_ERR_INVALID_ARG;
+    }
+    message.len = (int)length;
     return queue_message(&message);
 }
