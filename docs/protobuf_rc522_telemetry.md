@@ -5,10 +5,11 @@ now carries a binary `aai16.Envelope` with a `sensor_telemetry.rc522` body. The 
 event text is removed from the firmware; there are no JSON bytes inside the message.
 Existing JSON-only subscribers of this topic must use the schema decoder (below).
 
-**Status.** Host tests pass (C encoder, C decoder, and an independent Python decoder).
-The full firmware image builds for ESP32-S3 on ESP-IDF 6.1 (0x11cd90 bytes, 72% of the app
-partition free). **Not yet verified on hardware:** no flash, no real card tap and no broker run
-were performed for this change. See [IDF 6.1 build](#idf-61-build).
+**Status.** Verified end to end on an ESP32-S3 running ESP-IDF 6.1: a real card tap was published
+to a Mosquitto broker and decoded both by an independent Python decoder and by MQTTX
+(see [Hardware verification](#hardware-verification)). Host tests also pass (C encoder, C decoder, and
+Python decoder), and the full firmware image builds (0x11cdd0 bytes, 72% of the app partition free).
+See [IDF 6.1 build](#idf-61-build).
 
 ## Wire contract
 
@@ -88,14 +89,33 @@ at the first `0x00` and would silently truncate a binary message; it now uses le
 The outbox-backpressure test pre-fills part of the allowance so it no longer depends on how large
 an event happens to be.
 
+## Hardware verification
+
+Performed on the project board (ESP32-S3, ESP-IDF 6.1), broker Mosquitto 2.1.2 on the demo laptop:
+
+| Check | Observed |
+| --- | --- |
+| Reader start | `rc522 | HEALTH | Ready | CS=14 RST=21`, `state=READY init=1` |
+| Card detected | `rc522 | DATA | event=PRESENT uid=F173CE01 uid_len=4` |
+| Event built | `rc522_event attempts=2 queued=2` (one event per presentation, not per poll) |
+| Message on the broker | 40 bytes on `aai16/sensors/rc522/event`, QoS 1, captured by `mosquitto_sub` |
+| Independent decode (Python, project schema) | `sensor_telemetry`, `SENSOR_RC522`, `boot_id=0xC2B09CED` (equal to the boot log), `sequence=2`, `generation=0`, UID `F173CE01`, uptime 99.9 s |
+| MQTTX decode (schema `aai16.proto`, `aai16.Envelope`) | Same fields; `uid` shown as Base64 `8XPOAQ==` (= `F1 73 CE 01`), 64-bit times shown as strings |
+
+Not measured: delivery latency, behaviour under load, and a card-removal/re-presentation sequence over
+many cycles. A card left on the reader produces one event only; it must be removed and presented again
+for the next.
+
 ## Reading the messages
 
 - **MQTTX:** create a separate connection for telemetry. Under **Scripts -> Schema** import
   `protocol/aai16.proto`; in the connection's **Use Script** dialog choose Schema Type **Protobuf**,
   Proto name **aai16.Envelope**, applied to **Received**, with **no** function selected. Subscribe to
   `aai16/sensors/rc522/event`. Keep the existing ACK Monitor connection separate, because MQTTX
-  applies one script setting per connection ([workflow](protobuf_config_workflow.md)). *These steps
-  follow the documented MQTTX workflow and were not exercised against MQTTX for this change.*
+  applies the script setting application-wide, not per connection, so a JSON connection that is
+  connected at the same time shows deserialization errors for its JSON messages
+  ([workflow](protobuf_config_workflow.md)); disconnect it while checking Protobuf topics. In MQTTX 1.13.1
+  the connection menu entry is **Run Script**, and the decoded `uid` bytes appear as Base64 text.
 - **Python:** `pb.Envelope.FromString(payload)` with `tools/protocol/generated/aai16_pb2.py`.
 
 ## IDF 6.1 build
@@ -106,11 +126,13 @@ longer provides (it moved to the PSA crypto API). The ML code was written agains
 
 Fixed with `components/motion_ml/include/motion_sha256.h`, a small wrapper used by both files: IDF 6 and
 later use PSA (`psa_hash_compute` / `psa_hash_setup`, `PSA_ALG_SHA_256`, preceded by `psa_crypto_init()`);
-earlier IDF versions and the host tests make exactly the same mbedTLS calls as before. Limits of this
-verification: the IDF 6 path compiles and links but **has not executed on a device**. It runs when a model
-is verified, so a fault would show as `sha256_mismatch` or a model init failure in the serial log. The
-host tests for model storage/ML (`tests/model_upload_host`, `tests/motion_host`) need a host TensorFlow Lite
-build and were not run.
+earlier IDF versions and the host tests make exactly the same mbedTLS calls as before.
+
+Verification: the one-shot hash **ran on the device**. At boot the ML engine verifies the bundled model's
+SHA-256 before use, and the boot log shows `ML: initializing model=A ... golden+trial=PASS`; a wrong hash
+would have been reported as `sha256_mismatch`. Not exercised: the streaming hash used when a stored model
+package is verified after upload (no upload was performed), and the host ML/upload tests
+(`tests/model_upload_host`, `tests/motion_host`), which need a host TensorFlow Lite build.
 
 ## Remaining telemetry migration
 
