@@ -6,10 +6,9 @@ event text is removed from the firmware; there are no JSON bytes inside the mess
 Existing JSON-only subscribers of this topic must use the schema decoder (below).
 
 **Status.** Host tests pass (C encoder, C decoder, and an independent Python decoder).
-The firmware component compiles on ESP-IDF 6.1. **Not yet verified on hardware:** no
-flash, no real card tap and no broker run were performed for this change. A full
-firmware image could not be built on IDF 6.1 for this branch, for a reason unrelated to
-this change (see [Known limitation](#known-limitation-idf-61-build)).
+The full firmware image builds for ESP32-S3 on ESP-IDF 6.1 (0x11cd90 bytes, 72% of the app
+partition free). **Not yet verified on hardware:** no flash, no real card tap and no broker run
+were performed for this change. See [IDF 6.1 build](#idf-61-build).
 
 ## Wire contract
 
@@ -99,14 +98,19 @@ an event happens to be.
   follow the documented MQTTX workflow and were not exercised against MQTTX for this change.*
 - **Python:** `pb.Envelope.FromString(payload)` with `tools/protocol/generated/aai16_pb2.py`.
 
-## Known limitation: IDF 6.1 build
+## IDF 6.1 build
 
-On this branch a full build for ESP-IDF 6.1 fails in `components/motion_ml/motion_engine.cc` and
-`components/model_upload/upload_store.cc`: both include `mbedtls/sha256.h`, which ESP-IDF 6.1's
-mbedTLS 4 no longer provides (it moved to the PSA crypto API). Everything this change touches
-(`mqtt_manager`, `aai16_protocol`) compiles. The ML code was written and documented against ESP-IDF 5.5.5.
-Building the whole image for 6.1 needs those two files ported (for example, `psa_hash_compute` with
-`PSA_ALG_SHA_256`), or the image must be built with IDF 5.5.x.
+Before this change the branch did not build on ESP-IDF 6.1: `components/motion_ml/motion_engine.cc` and
+`components/model_upload/upload_store.cc` included `mbedtls/sha256.h`, which ESP-IDF 6.1's mbedTLS 4 no
+longer provides (it moved to the PSA crypto API). The ML code was written against ESP-IDF 5.5.5.
+
+Fixed with `components/motion_ml/include/motion_sha256.h`, a small wrapper used by both files: IDF 6 and
+later use PSA (`psa_hash_compute` / `psa_hash_setup`, `PSA_ALG_SHA_256`, preceded by `psa_crypto_init()`);
+earlier IDF versions and the host tests make exactly the same mbedTLS calls as before. Limits of this
+verification: the IDF 6 path compiles and links but **has not executed on a device**. It runs when a model
+is verified, so a fault would show as `sha256_mismatch` or a model init failure in the serial log. The
+host tests for model storage/ML (`tests/model_upload_host`, `tests/motion_host`) need a host TensorFlow Lite
+build and were not run.
 
 ## Remaining telemetry migration
 

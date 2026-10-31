@@ -2,7 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include <new>
-#include "mbedtls/sha256.h"
+#include "motion_sha256.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace motion {
@@ -29,7 +29,7 @@ bool Engine::init(const ModelView &view, uint8_t *arena, size_t size)
         !arena || size < 1024 || reinterpret_cast<uintptr_t>(arena) % 16 ||
         reinterpret_cast<uintptr_t>(view.bytes) % 16) return fail("model_or_arena_invalid");
     uint8_t digest[32];
-    if (mbedtls_sha256(view.bytes, view.length, digest, 0) != 0 ||
+    if (!aai16::Sha256::compute(view.bytes, view.length, digest) ||
         std::memcmp(digest, view.sha256, 32)) return fail("sha256_mismatch");
     flatbuffers::Verifier verifier(view.bytes, view.length);
     if (!tflite::VerifyModelBuffer(verifier)) return fail("invalid_flatbuffer");

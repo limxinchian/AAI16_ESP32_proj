@@ -1,6 +1,6 @@
 #include "upload_store.h"
 #include "motion_backend.h"
-#include "mbedtls/sha256.h"
+#include "motion_sha256.h"
 #include "pb_encode.h"
 #include "pb_decode.h"
 #include <algorithm>
@@ -16,7 +16,7 @@ uint32_t u32(const uint8_t *p) { return uint32_t(p[0])|uint32_t(p[1])<<8|uint32_
 void put32(uint8_t *p,uint32_t x) { for(unsigned i=0;i<4;++i) p[i]=x>>(8*i); }
 uint64_t u64(const uint8_t *p) { return u32(p)|uint64_t(u32(p+4))<<32; }
 void put64(uint8_t *p,uint64_t x) { put32(p,x); put32(p+4,x>>32); }
-bool sha(const void *data,size_t n,uint8_t out[32]) { return mbedtls_sha256(static_cast<const uint8_t*>(data),n,out,0)==0; }
+bool sha(const void *data,size_t n,uint8_t out[32]) { return aai16::Sha256::compute(data,n,out); }
 bool same(const aai16_UploadManifest &a,const aai16_UploadManifest &b) {
     return a.family==b.family && !std::strcmp(a.version,b.version) && a.package_size==b.package_size &&
         a.model_size==b.model_size && a.compatibility_profile==b.compatibility_profile &&
@@ -59,16 +59,15 @@ uint32_t Store::base(unsigned family,unsigned bank) { return bank*(flash_.capaci
 bool Store::verify(const Stored &slot,char detail[64]) {
     const auto &m=slot.manifest;
     uint8_t chunk[AAI16_CHUNK_MAX],digest[32];
-    mbedtls_sha256_context ctx; mbedtls_sha256_init(&ctx);
-    bool ok=mbedtls_sha256_starts(&ctx,0)==0;
+    aai16::Sha256 hash;
+    bool ok=hash.start();
     uint32_t address=base(m.family,slot.bank)+kSector;
     for(uint32_t offset=0;ok && offset<m.package_size;) {
         size_t n=std::min<uint32_t>(sizeof(chunk),m.package_size-offset);
-        ok=flash_.read(m.family,address+offset,chunk,n) && mbedtls_sha256_update(&ctx,chunk,n)==0;
+        ok=flash_.read(m.family,address+offset,chunk,n) && hash.update(chunk,n);
         offset+=n;
     }
-    ok=ok && mbedtls_sha256_finish(&ctx,digest)==0;
-    mbedtls_sha256_free(&ctx);
+    ok=ok && hash.finish(digest);
     if(!ok) { std::strcpy(detail,"storage_read"); return false; }
     if(std::memcmp(digest,m.package_sha256.bytes,32)) { std::strcpy(detail,"package_sha256"); return false; }
     const uint8_t *p=flash_.map(m.family,address,m.package_size);
