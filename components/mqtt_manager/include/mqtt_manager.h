@@ -129,9 +129,12 @@ esp_err_t mqtt_manager_update_hcsr04p_snapshot(const hcsr04p_reading_t *reading,
 // QoS 0, retain=0; age >=2000 ms at SDK admission is stale. Offline/stale/failed
 // attempts are discarded, never retried. Pending samples can be replaced while
 // the publisher is busy/offline; reconnect replays no consumed history.
-// seq counts consumed attempts, including offline/stale/cancelled/SDK failures, starting
+// The payload is a binary aai16.Envelope (sensor_telemetry.mhz1911a), not JSON: co2_ppm
+// (integer), acquired_us (= acquired_us here), uptime_us, boot_id, sequence and the sensor's
+// configuration generation at handoff. Values outside 400..5000 ppm are rejected.
+// sequence counts consumed attempts, including offline/stale/cancelled/SDK failures, starting
 // at 1 per boot and wrapping as uint32_t. Updates/replacements/deferrals and
-// invalid or duplicate handoffs do not advance it. uptime_ms = acquired_us/1000.
+// invalid or duplicate handoffs do not advance it.
 // ESP_OK means snapshot acceptance only, not broker or subscriber delivery.
 // Disabled handoffs return ESP_ERR_INVALID_STATE.
 esp_err_t mqtt_manager_update_mhz1911a_snapshot(uint16_t co2_ppm, int64_t acquired_us);

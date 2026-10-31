@@ -134,6 +134,20 @@ assert t.hcsr04p.distance_cm == f32(42.1) and t.hcsr04p.echo_us == f32(2456.3)
 assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
 (output / 'hcsr04p.pb').write_bytes(wire)
 print(f'PASS: live C/nanopb HC-SR04P payload ({len(wire)} bytes) decoded by Python; exact float32, microsecond times, sequence/generation', flush=True)
+# MH-Z19 CO2 reading: bytes from the real C/nanopb mailbox publisher decoded by Python.
+wire = subprocess.check_output([str(binary), '--mhz1911a-bridge'])
+message = pb.Envelope.FromString(wire)
+t = message.sensor_telemetry
+assert message.WhichOneof('body') == 'sensor_telemetry' and wire[:2] == b'\x08\x01'
+assert message.protocol_version == 1 and message.boot_id == 0x12345678 and message.sequence == 1
+assert message.HasField('generation') and message.generation == 7
+assert not message.HasField('request_id') and not message.HasField('phase')
+assert t.sensor == pb.SENSOR_MHZ1911A and t.WhichOneof('reading') == 'mhz1911a'
+assert t.acquired_us == 99385041 and t.uptime_us == 99885041  # Acquired 0.5 s before building.
+assert t.mhz1911a.co2_ppm == 1433 and t.mhz1911a.HasField('co2_ppm')
+assert not t.HasField('health') and not t.HasField('interval_ms') and len(wire) < 64
+(output / 'mhz1911a.pb').write_bytes(wire)
+print(f'PASS: live C/nanopb MH-Z19 payload ({len(wire)} bytes) decoded by Python; integer CO2, microsecond times, sequence/generation', flush=True)
 # LD2450 radar report: bytes from the real C/nanopb mailbox publisher decoded by Python.
 wire = subprocess.check_output([str(binary), '--ld2450-bridge'])
 message = pb.Envelope.FromString(wire)

@@ -396,6 +396,21 @@ int main(int argc, char **argv)
         assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--mhz1911a-bridge")) {
+        // Emit the exact bytes the real publisher hands to the SDK for one CO2 reading:
+        // acquired 0.5 s before the message is built, configuration generation 7.
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        assert(mqtt_manager_init() == ESP_OK); event(MQTT_EVENT_CONNECTED);
+        s_transactions.generation[SENSOR_MHZ1911A] = 7;
+        clock_us = INT64_C(99885041);
+        assert(mqtt_manager_update_mhz1911a_snapshot(1433, clock_us - 500000) == ESP_OK);
+        service_mhz1911a_snapshot();
+        assert(publish_calls == 1 && last_qos == 0 && !strcmp(last_topic, MHZ1911A_DATA_TOPIC));
+        assert(fwrite(last_payload, 1, (size_t)last_payload_len, stdout) == (size_t)last_payload_len);
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--ld2450-bridge")) {
         // Emit the exact bytes the real publisher hands to the SDK for one radar report:
         // slots 1 and 3 present (negative values at both extremes), slot 2 empty,

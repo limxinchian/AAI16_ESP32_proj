@@ -63,6 +63,7 @@ _Static_assert(HCSR04P_PAYLOAD_SIZE <= TX_PAYLOAD_SIZE, "Distance payload exceed
 #define MHZ1911A_PAYLOAD_SIZE 128
 #define MHZ1911A_MAX_AGE_US (TELEMETRY_MAX_AGE_MS * 1000LL)
 _Static_assert(MHZ1911A_PAYLOAD_SIZE <= TX_PAYLOAD_SIZE, "CO2 payload exceeds telemetry capacity");
+_Static_assert(80 + aai16_Mhz1911aReading_size <= MHZ1911A_PAYLOAD_SIZE, "CO2 telemetry exceeds its payload buffer");
 // Keep the original 4096-byte allowance available to configuration ACKs/control
 // traffic. Events may occupy at most an additional 1024 serialized bytes.
 #define ACK_OUTBOX_RESERVE_BYTES 4096
@@ -207,6 +208,7 @@ static uint32_t s_hcsr04p_epoch;
 static struct {
     uint16_t co2_ppm;
     int64_t acquired_us;
+    uint32_t generation; // Configuration generation when the sample was handed over.
     bool pending;
 } s_mhz1911a;
 static int64_t s_mhz1911a_last_update_us = -1; // Guard also covers already consumed samples.
@@ -663,6 +665,12 @@ esp_err_t mqtt_manager_update_mhz1911a_snapshot(uint16_t co2_ppm, int64_t acquir
         count_event(&s_mhz1911a_invalid);
         return ESP_ERR_INVALID_ARG;
     }
+    // A sample keeps the generation it was acquired under, even if publication is
+    // delayed. Separate short critical section: never nested with s_stats_lock.
+    uint32_t generation;
+    portENTER_CRITICAL(&s_config_lock);
+    generation = s_transactions.generation[SENSOR_MHZ1911A];
+    portEXIT_CRITICAL(&s_config_lock);
     portENTER_CRITICAL(&s_stats_lock);
     if (!s_mhz1911a_enabled) {
         portEXIT_CRITICAL(&s_stats_lock);
@@ -677,6 +685,7 @@ esp_err_t mqtt_manager_update_mhz1911a_snapshot(uint16_t co2_ppm, int64_t acquir
     if (s_mhz1911a.pending) ++s_mhz1911a_coalesced;
     s_mhz1911a.co2_ppm = co2_ppm;
     s_mhz1911a.acquired_us = acquired_us;
+    s_mhz1911a.generation = generation;
     s_mhz1911a.pending = true;
     s_mhz1911a_last_update_us = acquired_us;
     portEXIT_CRITICAL(&s_stats_lock);
@@ -692,15 +701,29 @@ void mqtt_manager_commit_mhz1911a_config(bool enabled)
     portEXIT_CRITICAL(&s_stats_lock);
 }
 
-static int format_mhz1911a(char *payload, size_t capacity, uint16_t co2_ppm,
-                          int64_t acquired_us, uint32_t seq)
+// Binary aai16.Envelope.sensor_telemetry.mhz1911a, never JSON. The old JSON "uptime_ms"
+// was the acquisition time: it is acquired_us here, in microseconds; uptime_us is when
+// this message was built. seq -> Envelope.sequence (consumed publication attempts).
+// co2_ppm is an unsigned integer, 400..5000. Returns the encoded length, or -1 on failure.
+static int encode_mhz1911a(uint8_t *data, size_t capacity, uint16_t co2_ppm,
+                           int64_t acquired_us, int64_t uptime_us, uint32_t generation, uint32_t seq)
 {
-    // Same fixed-buffer JSON encoding and boot identity as existing telemetry.
-    int len = snprintf(payload, capacity,
-        "{\"sensor\":\"mhz1911a\",\"boot_id\":\"%08" PRIx32 "\",\"seq\":%" PRIu32
-        ",\"uptime_ms\":%" PRId64 ",\"co2_ppm\":%u}",
-        s_boot_id, seq, acquired_us / 1000, (unsigned)co2_ppm);
-    return len < 0 || (size_t)len >= capacity ? -1 : len;
+    if (acquired_us < 0 || uptime_us < acquired_us) return -1;
+    aai16_Envelope e = aai16_Envelope_init_zero;
+    e.has_protocol_version = e.has_boot_id = e.has_sequence = e.has_generation = true;
+    e.protocol_version = AAI16_PROTOCOL_VERSION;
+    e.boot_id = s_boot_id; e.sequence = seq; e.generation = generation;
+    e.which_body = aai16_Envelope_sensor_telemetry_tag;
+    aai16_SensorTelemetry *t = &e.body.sensor_telemetry;
+    t->has_sensor = t->has_acquired_us = t->has_uptime_us = true;
+    t->sensor = config_sensor_to_wire(SENSOR_MHZ1911A);
+    t->acquired_us = (uint64_t)acquired_us;
+    t->uptime_us = (uint64_t)uptime_us;
+    t->which_reading = aai16_SensorTelemetry_mhz1911a_tag;
+    t->reading.mhz1911a.has_co2_ppm = true;
+    t->reading.mhz1911a.co2_ppm = co2_ppm;
+    size_t length = 0;
+    return aai16_protocol_encode(&e, data, capacity, &length) == aai16_ResultCode_RESULT_OK ? (int)length : -1;
 }
 
 static void service_mhz1911a_snapshot(void)
@@ -709,7 +732,7 @@ static void service_mhz1911a_snapshot(void)
                 (s_event_queue != NULL && uxQueueMessagesWaiting(s_event_queue));
     uint16_t co2_ppm;
     int64_t acquired_us;
-    uint32_t epoch;
+    uint32_t epoch, generation;
     portENTER_CRITICAL(&s_stats_lock);
     if (!s_mhz1911a_enabled || !s_mhz1911a.pending || busy) {
         if (s_mhz1911a.pending) ++s_mhz1911a_deferred;
@@ -719,6 +742,7 @@ static void service_mhz1911a_snapshot(void)
     co2_ppm = s_mhz1911a.co2_ppm;
     epoch = s_mhz1911a_epoch;
     acquired_us = s_mhz1911a.acquired_us;
+    generation = s_mhz1911a.generation;
     s_mhz1911a.pending = false; // Consume once, including offline/failed attempts.
     portEXIT_CRITICAL(&s_stats_lock);
 
@@ -732,10 +756,11 @@ static void service_mhz1911a_snapshot(void)
         count_event(&stats->offline);
         return;
     }
-    char payload[MHZ1911A_PAYLOAD_SIZE];
-    int len = format_mhz1911a(payload, sizeof(payload), co2_ppm, acquired_us, seq);
+    uint8_t payload[MHZ1911A_PAYLOAD_SIZE]; // Binary: length-delimited, never strlen().
+    int len = encode_mhz1911a(payload, sizeof(payload), co2_ppm, acquired_us,
+                              esp_timer_get_time(), generation, seq);
     if (len < 0) {
-        count_event(&stats->invalid);
+        count_event(&stats->invalid); // Serialization failure, separate from invalid updates.
         return;
     }
     int64_t start_us = esp_timer_get_time();
@@ -757,7 +782,7 @@ static void service_mhz1911a_snapshot(void)
     if (!admitted) return;
     // Only the shared publisher calls the SDK. Its local copy cannot be torn by
     // a concurrent reader update, and the reader never waits on this SDK mutex.
-    int result = esp_mqtt_client_publish(s_client, MHZ1911A_DATA_TOPIC, payload, len, 0, 0);
+    int result = esp_mqtt_client_publish(s_client, MHZ1911A_DATA_TOPIC, (const char *)payload, len, 0, 0);
     int64_t elapsed_us = esp_timer_get_time() - start_us;
     portENTER_CRITICAL(&s_stats_lock);
     if (elapsed_us > stats->max_tx_call_us) stats->max_tx_call_us = elapsed_us;

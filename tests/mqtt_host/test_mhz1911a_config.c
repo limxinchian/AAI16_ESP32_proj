@@ -49,7 +49,7 @@ static void test_mhz1911a_config(void)
             int64_t fresh = clock_us;
             assert(s_mhz1911a.pending);
             service_mhz1911a_snapshot(); ++calls;
-            assert(publish_calls == calls); check_co2_json(1600, fresh, stats->attempts);
+            assert(publish_calls == calls); check_co2_message(1600, fresh, stats->attempts);
         } else assert(!s_mhz1911a.pending);
     }
     assert(mqtt_manager_update_mhz1911a_snapshot(1700, ++clock_us) == ESP_OK);
@@ -57,7 +57,7 @@ static void test_mhz1911a_config(void)
     publish_hook = co2_disable_inside_sdk;
     service_mhz1911a_snapshot(); ++calls;
     assert(publish_calls == calls && !s_mhz1911a_enabled && !s_mhz1911a.pending);
-    check_co2_json(1700, submitted, stats->attempts); // Already admitted cannot be recalled.
+    check_co2_message(1700, submitted, stats->attempts); // Already admitted cannot be recalled.
     pump(); assert(publish_calls == calls);
     mqtt_manager_commit_mhz1911a_config(true);
     event(MQTT_EVENT_DISCONNECTED);
@@ -67,7 +67,7 @@ static void test_mhz1911a_config(void)
     pump(); assert(publish_calls == calls);
     assert(mqtt_manager_update_mhz1911a_snapshot(1800, ++clock_us) == ESP_OK);
     submitted = clock_us; pump(); ++calls;
-    assert(publish_calls == calls); check_co2_json(1800, submitted, stats->attempts);
+    assert(publish_calls == calls); check_co2_message(1800, submitted, stats->attempts);
     assert(allocs == allocations);
     puts("PASS: CO2 disable/interval cancellation before admission, disable-enable epoch, in-flight SDK boundary and reconnect freshness");
 
