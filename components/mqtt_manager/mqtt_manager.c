@@ -1269,6 +1269,9 @@ esp_err_t mqtt_manager_init(void)
         .network.disable_auto_reconnect = false,
     };
 
+    // Address only (never credentials). A stale address baked into an old flash
+    // image is a common cause of "Connection reset"; this makes it visible at boot.
+    ESP_LOGI(TAG, "Broker: %s", MQTT_BROKER_URI);
     s_client = esp_mqtt_client_init(&config);
 
     if (s_client == NULL) {
