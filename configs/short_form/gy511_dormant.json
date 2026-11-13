@@ -1,0 +1,6 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {"sensor": "gy511", "dormant": true}
+ ]
+}

@@ -1,7 +1,7 @@
-# AAI16 ESP32-S3-N16R8 - provisional 16 MB flash layout
-# Name,    Type, SubType, Offset,   Size, Flags
-nvs,       data, nvs,     0x9000,   0x6000,
-phy_init,  data, phy,     0xF000,   0x1000,
-factory,   app,  factory, 0x10000,  4M,
-model_a,   data, 0x40,    ,        3M,
-model_b,   data, 0x41,    ,        3M,
+# AAI16 ESP32-S3-N16R8 (16 MB flash). Model banks are 64 KB aligned so esp_partition_mmap can map them.
+# Name,    Type, SubType, Offset,    Size,      Flags
+nvs,       data, nvs,     0x9000,    0x10000,
+phy_init,  data, phy,     0x19000,   0x1000,
+factory,   app,  factory, 0x20000,   0x400000,
+bank0,     data, 0x40,    0x420000,  0x300000,
+bank1,     data, 0x41,    0x720000,  0x300000,

@@ -1,0 +1,4 @@
+# Reference (non-accelerated) inference build for the AC-16 comparison: portable TFLM kernels, no ESP-NN.
+CONFIG_ESP_TFLITE_MICRO_USE_ESP_NN=n
+CONFIG_NN_OPTIMIZED=n
+

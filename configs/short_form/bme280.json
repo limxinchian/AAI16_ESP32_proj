@@ -1,0 +1,8 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sensor": "bme280"
+  }
+ ]
+}

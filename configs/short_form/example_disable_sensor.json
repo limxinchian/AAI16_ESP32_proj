@@ -1,0 +1,9 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sensor": "dht22",
+   "enabled": false
+  }
+ ]
+}

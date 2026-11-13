@@ -1,0 +1,29 @@
+{
+  "channels": [
+    "VALUE_ACCEL_X_G",
+    "VALUE_ACCEL_Y_G",
+    "VALUE_ACCEL_Z_G"
+  ],
+  "contractVersion": 1,
+  "featureCount": 11,
+  "format": "FORMAT_TFLITE",
+  "inputScale": 0.011560395,
+  "inputZeroPoint": -128,
+  "kind": "MODEL_MOTION",
+  "labels": [
+    "STATIONARY",
+    "MOVING",
+    "VIBRATING"
+  ],
+  "maxAgeMs": 500,
+  "modelVersion": 1,
+  "outputScale": 0.00390625,
+  "outputZeroPoint": -128,
+  "periodTolerancePct": 25,
+  "preprocessing": "PREPROC_MOTION_STATS_V1",
+  "samplePeriodMs": 20,
+  "strideSamples": 32,
+  "tensorArenaBytes": 16384,
+  "tfliteSha256": "pSYQzJbVU3qlFqm5CbIvYgvKs6LKOGTRsMqY1AmvCck=",
+  "windowSamples": 64
+}

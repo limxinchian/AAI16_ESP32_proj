@@ -1,0 +1,6 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {"sensor": "dht22", "dormant": true}
+ ]
+}

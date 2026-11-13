@@ -1,0 +1,52 @@
+{
+  "confusion_matrix_rows_true_cols_pred": [
+    [
+      442,
+      0,
+      0
+    ],
+    [
+      0,
+      458,
+      0
+    ],
+    [
+      0,
+      0,
+      450
+    ]
+  ],
+  "data_provenance": "SYNTHETIC - not validated on real sensor data; synthetic: gravity + noise (STATIONARY), 0.4-3 Hz sway (MOVING), 7-22 Hz shake (VIBRATING)",
+  "epochs_run": 80,
+  "float_test_accuracy": 1.0,
+  "float_vs_int8_agreement": 1.0,
+  "int8_test_accuracy": 1.0,
+  "labels": [
+    "STATIONARY",
+    "MOVING",
+    "VIBRATING"
+  ],
+  "ops": [
+    "FULLY_CONNECTED",
+    "SOFTMAX"
+  ],
+  "package_bytes": 3743,
+  "real_data_stats": null,
+  "seed": 20261104,
+  "split": {
+    "test": 1350,
+    "train": 6300,
+    "val": 1350
+  },
+  "split_mode": "random (synthetic)",
+  "task": "motion",
+  "tensor_arena_bytes_declared": 16384,
+  "tensor_arena_note": "declared guess; NOT measured on target (TFLM arena probe pending)",
+  "tflite_bytes": 3600,
+  "versions": {
+    "numpy": "2.4.6",
+    "python": "3.11.0",
+    "tensorflow": "2.21.0"
+  },
+  "windows_per_class": 3000
+}

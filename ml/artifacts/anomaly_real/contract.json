@@ -1,0 +1,37 @@
+{
+  "anomalyThreshold": 0.018781647,
+  "channels": [
+    "VALUE_ACCEL_X_G",
+    "VALUE_ACCEL_Y_G",
+    "VALUE_ACCEL_Z_G",
+    "VALUE_TEMPERATURE_C",
+    "VALUE_HUMIDITY_PCT",
+    "VALUE_PRESSURE_PA",
+    "VALUE_CO2_PPM",
+    "VALUE_DISTANCE_CM",
+    "VALUE_RADAR_DISTANCE_MM",
+    "VALUE_TEMPERATURE_C"
+  ],
+  "contractVersion": 1,
+  "featureCount": 32,
+  "format": "FORMAT_TFLITE",
+  "inputScale": 0.011733064,
+  "inputZeroPoint": -43,
+  "kind": "MODEL_ANOMALY",
+  "labels": [
+    "NORMAL",
+    "ANOMALY"
+  ],
+  "maxAgeMs": 6000,
+  "modelVersion": 2,
+  "outputCount": 32,
+  "outputScale": 0.012332454,
+  "outputZeroPoint": -35,
+  "periodTolerancePct": 50,
+  "preprocessing": "PREPROC_SLOT_STATS_V1",
+  "samplePeriodMs": 1000,
+  "strideSamples": 1,
+  "tensorArenaBytes": 16384,
+  "tfliteSha256": "IvyKfl6mQ7fZbF/ba/Q4HB8UOpkZL8NwS2ah3A88Czw=",
+  "windowSamples": 1
+}

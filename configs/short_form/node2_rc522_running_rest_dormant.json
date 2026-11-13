@@ -1,0 +1,16 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sensor": "rc522"
+  },
+  {
+   "sensor": "gy511",
+   "dormant": true
+  },
+  {
+   "sensor": "ld2450",
+   "dormant": true
+  }
+ ]
+}

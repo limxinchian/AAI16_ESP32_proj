@@ -1,0 +1,19 @@
+menu "AAI16 node"
+
+    config AAI16_NODE_ID
+        string "Node id (1-15 characters, used in MQTT topics)"
+        default "node1"
+
+    config AAI16_WIFI_SSID
+        string "Wi-Fi SSID (empty = run without network, serial console only)"
+        default ""
+
+    config AAI16_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config AAI16_MQTT_URI
+        string "MQTT broker URI"
+        default "mqtt://192.168.1.10:1883"
+
+endmenu

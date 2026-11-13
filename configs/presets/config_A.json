@@ -1,0 +1,304 @@
+{
+ "generation": "auto",
+ "profiles": [
+  {
+   "sensor": "dht22",
+   "enabled": true,
+   "gpio": {
+    "data_pin": 6
+   },
+   "period_ms": 2000,
+   "ops": [
+    {
+     "type": 6,
+     "delay_us": 2000,
+     "pin": 6
+    },
+    {
+     "type": 8,
+     "read_len": 5,
+     "pin": 6,
+     "timeout_us": 200,
+     "threshold_us": 50
+    }
+   ],
+   "decode": [
+    {
+     "width": 2,
+     "big_endian": true,
+     "scale": 0.1
+    },
+    {
+     "dest_reg": 1,
+     "src_offset": 2,
+     "width": 2,
+     "big_endian": true,
+     "sign": 2,
+     "scale": 0.1
+    }
+   ],
+   "checks": [
+    {
+     "kind": 1,
+     "length": 4,
+     "check_offset": 4
+    }
+   ],
+   "output_count": 2,
+   "output_kinds": [
+    5,
+    4
+   ]
+  },
+  {
+   "sensor": "gy511",
+   "enabled": true,
+   "i2c": {
+    "sda": 8,
+    "scl": 9,
+    "addr": 25,
+    "clock_hz": 400000
+   },
+   "period_ms": 20,
+   "ops": [
+    {
+     "type": 3,
+     "tx": "qA==",
+     "read_len": 6
+    }
+   ],
+   "decode": [
+    {
+     "width": 2,
+     "shift": 4,
+     "value_bits": 12,
+     "sign": 1,
+     "scale": 0.001
+    },
+    {
+     "dest_reg": 1,
+     "src_offset": 2,
+     "width": 2,
+     "shift": 4,
+     "value_bits": 12,
+     "sign": 1,
+     "scale": 0.001
+    },
+    {
+     "dest_reg": 2,
+     "src_offset": 4,
+     "width": 2,
+     "shift": 4,
+     "value_bits": 12,
+     "sign": 1,
+     "scale": 0.001
+    }
+   ],
+   "init_ops": [
+    {
+     "type": 1,
+     "tx": "IFc="
+    }
+   ],
+   "output_count": 3,
+   "output_kinds": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "sensor": "ld2450",
+   "enabled": true,
+   "uart": {
+    "port": 1,
+    "tx": 17,
+    "rx": 18,
+    "baud": 256000
+   },
+   "period_ms": 100,
+   "ops": [
+    {
+     "type": 9,
+     "tx": "qv8DAA==",
+     "read_len": 30,
+     "timeout_us": 200000,
+     "tail": "Vcw="
+    }
+   ],
+   "decode": [
+    {
+     "src_offset": 4,
+     "width": 2,
+     "sign": 3,
+     "scale": 1.0
+    },
+    {
+     "dest_reg": 1,
+     "src_offset": 6,
+     "width": 2,
+     "sign": 3,
+     "scale": 1.0
+    },
+    {
+     "dest_reg": 2,
+     "src_offset": 8,
+     "width": 2,
+     "sign": 3,
+     "scale": 1.0
+    }
+   ],
+   "output_count": 3,
+   "output_kinds": [
+    9,
+    10,
+    9
+   ]
+  },
+  {
+   "sensor": "rc522",
+   "enabled": true,
+   "spi": {
+    "sclk": 12,
+    "mosi": 11,
+    "miso": 13,
+    "cs": 14,
+    "clock_hz": 1000000
+   },
+   "period_ms": 200,
+   "ops": [
+    {
+     "type": 1,
+     "tx": "KIM="
+    },
+    {
+     "type": 4,
+     "delay_us": 6000
+    },
+    {
+     "type": 1,
+     "tx": "AgA="
+    },
+    {
+     "type": 1,
+     "tx": "FIA="
+    },
+    {
+     "type": 1,
+     "tx": "EiY="
+    },
+    {
+     "type": 1,
+     "tx": "Agw="
+    },
+    {
+     "type": 1,
+     "tx": "Goc="
+    },
+    {
+     "type": 4,
+     "delay_us": 1000
+    },
+    {
+     "type": 3,
+     "tx": "lAA=",
+     "read_len": 2
+    },
+    {
+     "type": 3,
+     "tx": "kpIA",
+     "read_len": 3
+    },
+    {
+     "type": 1,
+     "tx": "KIA="
+    }
+   ],
+   "decode": [
+    {
+     "dest_reg": 2,
+     "src_offset": 1,
+     "width": 1,
+     "scale": 1.0
+    },
+    {
+     "dest_reg": 1,
+     "src_offset": 3,
+     "width": 2,
+     "scale": 1.0
+    }
+   ],
+   "init_ops": [
+    {
+     "type": 1,
+     "tx": "AgA="
+    },
+    {
+     "type": 4,
+     "delay_us": 10000
+    },
+    {
+     "type": 1,
+     "tx": "KkA="
+    },
+    {
+     "type": 1,
+     "tx": "Ij0="
+    }
+   ],
+   "calc": [
+    {
+     "token_count": 8
+    },
+    {
+     "dest_reg": 1,
+     "token_count": 3
+    }
+   ],
+   "program": [
+    {
+     "op": 1
+    },
+    {
+     "op": 1,
+     "value": 1.0
+    },
+    {
+     "op": 2,
+     "reg": 2
+    },
+    {
+     "op": 1,
+     "value": 2.0
+    },
+    {
+     "op": 4
+    },
+    {
+     "op": 8
+    },
+    {
+     "op": 4
+    },
+    {
+     "op": 11
+    },
+    {
+     "op": 2,
+     "reg": 1
+    },
+    {
+     "op": 2
+    },
+    {
+     "op": 5
+    }
+   ],
+   "output_count": 2,
+   "output_kinds": [
+    9,
+    9
+   ]
+  }
+ ]
+}

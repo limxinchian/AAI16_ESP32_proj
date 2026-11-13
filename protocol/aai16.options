@@ -1,0 +1,41 @@
+# Fixed maxima for every variable-length field (handoff section 4.1).
+# These values are part of the wire contract: change them only together with
+# components/config_manager/include/config_limits.h.
+
+aai16.Op.tx                 max_size:16
+aai16.Op.tail               max_size:4
+aai16.SensorProfile.ops     max_count:12
+aai16.SensorProfile.init_ops max_count:6
+aai16.SensorProfile.decode  max_count:32
+aai16.SensorProfile.calc    max_count:32
+aai16.SensorProfile.program max_count:256
+aai16.SensorProfile.checks  max_count:2
+aai16.ConfigApply.profiles  max_count:4
+aai16.CommittedConfig.profiles max_count:4
+aai16.Reading.values        max_count:8
+aai16.Reading.raw           max_size:64
+
+aai16.SensorProfile.output_kinds max_count:8
+aai16.ModelContract.channels     max_count:10
+aai16.ModelContract.labels       max_count:4
+aai16.ModelContract.labels       max_size:16
+aai16.ModelContract.tflite_sha256 max_size:32
+
+aai16.Rule.vars             max_count:6
+aai16.Rule.when             max_count:24
+aai16.RuleAction.text       max_size:32
+aai16.RuleAction.target_node max_size:16
+aai16.RuleSetApply.rules    max_count:8
+aai16.VirtualSource.remote_node max_size:16
+aai16.VirtualSource.kinds   max_count:8
+aai16.BridgeApply.sources   max_count:4
+aai16.NodeState.inputs      max_count:10
+aai16.Notification.text     max_size:32
+aai16.Heartbeat.node_id     max_size:16
+aai16.Heartbeat.active_sensor_ids max_count:8
+
+aai16.ModelChunk.sha256     max_size:32
+aai16.ModelChunk.data       max_size:1024
+aai16.ModelControl.inputs   max_count:10
+aai16.InferenceResult.scores max_count:4
+aai16.InferenceResult.slot_errors max_count:8

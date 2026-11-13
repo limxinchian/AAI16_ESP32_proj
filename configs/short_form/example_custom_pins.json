@@ -1,0 +1,15 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sensor": "hcsr04",
+   "trig": 6,
+   "echo": 5
+  },
+  {
+   "sensor": "bme280",
+   "addr": "0x77",
+   "period_ms": 1000
+  }
+ ]
+}

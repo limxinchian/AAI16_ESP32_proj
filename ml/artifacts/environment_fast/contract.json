@@ -1,0 +1,27 @@
+{
+  "channels": [
+    "VALUE_TEMPERATURE_C",
+    "VALUE_HUMIDITY_PCT"
+  ],
+  "contractVersion": 1,
+  "featureCount": 6,
+  "format": "FORMAT_TFLITE",
+  "inputScale": 0.024553766,
+  "inputZeroPoint": -19,
+  "kind": "MODEL_ENVIRONMENT",
+  "labels": [
+    "STABLE",
+    "CHANGING"
+  ],
+  "maxAgeMs": 2000,
+  "modelVersion": 2,
+  "outputScale": 0.00390625,
+  "outputZeroPoint": -128,
+  "periodTolerancePct": 30,
+  "preprocessing": "PREPROC_ENV_TREND_V1",
+  "samplePeriodMs": 500,
+  "strideSamples": 2,
+  "tensorArenaBytes": 16384,
+  "tfliteSha256": "FA7kxAyYM7SjSvD5So7czw5FvM1+fUbBFh0p8llCnCo=",
+  "windowSamples": 20
+}

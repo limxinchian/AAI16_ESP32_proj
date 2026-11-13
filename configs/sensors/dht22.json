@@ -1,0 +1,54 @@
+{
+ "generation": "auto",
+ "profiles": [
+  {
+   "sensor": "dht22",
+   "enabled": true,
+   "gpio": {
+    "data_pin": 6
+   },
+   "period_ms": 2000,
+   "ops": [
+    {
+     "type": 6,
+     "delay_us": 2000,
+     "pin": 6
+    },
+    {
+     "type": 8,
+     "read_len": 5,
+     "pin": 6,
+     "timeout_us": 200,
+     "threshold_us": 50
+    }
+   ],
+   "decode": [
+    {
+     "width": 2,
+     "big_endian": true,
+     "scale": 0.1
+    },
+    {
+     "dest_reg": 1,
+     "src_offset": 2,
+     "width": 2,
+     "big_endian": true,
+     "sign": 2,
+     "scale": 0.1
+    }
+   ],
+   "checks": [
+    {
+     "kind": 1,
+     "length": 4,
+     "check_offset": 4
+    }
+   ],
+   "output_count": 2,
+   "output_kinds": [
+    5,
+    4
+   ]
+  }
+ ]
+}

@@ -1,0 +1,64 @@
+{
+  "data_provenance": "MIXED - 60 % real normal recordings (BME280/DHT22/MAX6675/LD2450, augmented) + 40 % synthetic; the unrecorded slots (motion, co2, distance) are synthetic only",
+  "false_alarm_rate": 0.0005,
+  "final_loss": {
+    "train": 0.001659692032262683,
+    "val": 0.0016502267681062222
+  },
+  "ops": [
+    "FULLY_CONNECTED"
+  ],
+  "p99_7_normal": 0.012521098278095336,
+  "per_anomaly": {
+    "co2": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 1.0
+    },
+    "distance": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 0.9973333333333333
+    },
+    "equipment": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 1.0
+    },
+    "humidity": {
+      "attribution_rate_among_hits": 0.998,
+      "detection_rate": 1.0
+    },
+    "motion": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 0.8406666666666667
+    },
+    "pressure": {
+      "attribution_rate_among_hits": 0.9513333333333334,
+      "detection_rate": 1.0
+    },
+    "radar": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 0.9766666666666667
+    },
+    "temperature": {
+      "attribution_rate_among_hits": 0.9786524349566378,
+      "detection_rate": 0.9993333333333333
+    }
+  },
+  "real": {
+    "false_alarm_rate_real_test": 0.0,
+    "files": [
+      "normal_01.csv"
+    ],
+    "margin": 1.5,
+    "max_score_real_test": 0.015560830647509469,
+    "p99_7_val": 0.012521098278095336,
+    "rows": {
+      "test": 421,
+      "train": 1958,
+      "val": 420
+    }
+  },
+  "seed": 20261113,
+  "task": "anomaly",
+  "tflite_bytes": 7448,
+  "threshold": 0.018781647417143006
+}

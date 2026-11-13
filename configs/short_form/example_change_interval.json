@@ -1,0 +1,9 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sensor": "gy511",
+   "period_ms": 500
+  }
+ ]
+}

@@ -1,0 +1,603 @@
+// AAI16 ESP32-S3 configurable edge node - wire protocol (nanopb, bounded).
+//
+// Status: DRAFT v1 for team/supervisor review (handoff section 4.2).
+//   Milestone 1 implements and tests: ConfigApply, ApplyAck, Reading, CommittedConfig.
+//   The model/ML messages below are schema-only so far (no firmware logic yet).
+//
+// Every repeated/bytes field has a fixed maximum in aai16.options; nanopb then
+// generates fixed-size C structs, so no heap is used while decoding.
+syntax = "proto3";
+
+package aai16;
+
+// ---------------------------------------------------------------- enums
+
+enum BusType {
+  BUS_UNSPECIFIED = 0;
+  BUS_GPIO = 1;
+  BUS_I2C = 2;
+  BUS_UART = 3;
+  BUS_SPI = 4;
+}
+
+// Generic bus operations. The executor never looks at a sensor name; it only
+// runs these. Bytes produced by READ-type ops are appended, in order, to one
+// raw buffer which DecodeField entries then index into.
+enum OpType {
+  OP_UNSPECIFIED = 0;
+  OP_WRITE = 1;            // send `tx`
+  OP_READ = 2;             // read `read_len` bytes
+  OP_WRITE_READ = 3;       // send `tx`, then read `read_len` bytes
+                           //   I2C: repeated start; SPI: full duplex; UART: command/reply
+  OP_DELAY = 4;            // wait `delay_us`
+  OP_GPIO_SET = 5;         // drive `pin` to `level`
+  OP_GPIO_PULSE = 6;       // drive `pin` to `level` for `delay_us`, then invert
+  OP_GPIO_PULSE_WIDTH = 7; // measure how long `pin` stays at `level`; yields 4 bytes
+                           //   (uint32 big-endian microseconds); `timeout_us` bounds the wait
+  OP_GPIO_BIT_FRAME = 8;   // capture `read_len`*8 bits on `pin`; a bit is 1 when its
+                           //   high time exceeds `threshold_us`; `timeout_us` per edge
+  OP_UART_SYNC_READ = 9;   // UART only: discard bytes until the `tx` pattern is seen, then
+                           //   return `read_len` bytes starting at the pattern (so the
+                           //   pattern is part of the frame). If `tail` is set, the last
+                           //   tail.size bytes of the frame must equal `tail`, otherwise
+                           //   the cycle is reported READ_BAD_FRAME. `timeout_us` bounds it.
+}
+
+enum ApplyPhase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_ADMITTED = 1;  // validated and accepted for application
+  PHASE_APPLIED = 2;   // now the committed, running configuration
+  PHASE_REJECTED = 3;  // not applied; previous configuration unchanged
+}
+
+enum Reason {
+  REASON_NONE = 0;
+  REASON_STALE_GENERATION = 1;      // generation lower than committed
+  REASON_DUPLICATE_GENERATION = 2;  // generation equal to committed
+  REASON_EMPTY_REQUEST = 3;
+  REASON_TOO_MANY_PROFILES = 4;
+  REASON_BAD_SENSOR_ID = 5;
+  REASON_DUPLICATE_SENSOR_ID = 6;
+  REASON_DUPLICATE_BUS = 7;         // two profiles for one bus in one request
+  REASON_UNKNOWN_BUS = 8;
+  REASON_PARAMS_MISMATCH = 9;       // params oneof missing or not for `bus`
+  REASON_FORBIDDEN_PIN = 10;
+  REASON_BAD_ADDRESS = 11;
+  REASON_BAD_BAUD = 12;
+  REASON_BAD_CLOCK = 13;
+  REASON_BAD_SPI_MODE = 14;
+  REASON_BAD_PORT = 15;
+  REASON_BAD_PERIOD = 16;
+  REASON_NO_OPS = 17;
+  REASON_TOO_MANY_OPS = 18;
+  REASON_UNKNOWN_OP = 19;
+  REASON_OP_NOT_ALLOWED_ON_BUS = 20;
+  REASON_BAD_LENGTH = 21;           // tx/read length out of range or total RX too large
+  REASON_BAD_DELAY = 22;
+  REASON_BAD_TIMEOUT = 23;
+  REASON_PIN_NOT_CONFIGURED = 24;   // GPIO op uses a pin not named in GpioParams
+  REASON_BAD_DECODE = 25;           // decode field outside the raw buffer / bad width
+  REASON_APPLY_FAILED = 26;         // validated, but the bus engine could not start it
+  REASON_PERSIST_FAILED = 27;
+  REASON_PIN_CONFLICT = 28;         // a pin is used by two active profiles, or twice in one
+  REASON_MALFORMED = 29;            // payload failed to decode / exceeds a fixed maximum
+  REASON_BAD_CALC = 30;             // calc program invalid (stack, register, use-before-define)
+  REASON_BAD_CHECK = 31;            // frame check range outside the buffer / bad kind
+  REASON_BAD_OUTPUT = 32;           // output_count invalid or an output register never written
+  REASON_BAD_INIT = 33;             // init_ops invalid, or init decode outside the init buffer
+  REASON_BAD_RULE = 34;             // rule structure / expression / variable invalid
+  REASON_BAD_ACTION = 35;           // rule action fields invalid
+  REASON_FORBIDDEN_OUTPUT_PIN = 36; // action pin not allowed, or owned by an active sensor
+  REASON_TOO_MANY_RULES = 37;
+  REASON_BAD_BRIDGE = 38;           // virtual source invalid (id range, loop, duplicate, limits)
+  REASON_BAD_DORMANT = 39;          // dormant profile combined with enabled=true
+}
+
+enum ReadError {
+  READ_OK = 0;
+  READ_TIMEOUT = 1;
+  READ_BUS_ERROR = 2;
+  READ_BAD_FRAME = 3;
+  READ_NOT_ACTIVE = 4;
+  READ_CALC_ERROR = 5;    // division by zero, sqrt of negative, or non-finite result
+}
+
+// ---------------------------------------------------- bus parameters
+
+message I2cParams {
+  uint32 sda = 1;
+  uint32 scl = 2;
+  uint32 addr = 3;      // 7-bit address
+  uint32 clock_hz = 4;
+}
+
+message UartParams {
+  uint32 port = 1;      // UART_NUM_1 or UART_NUM_2 (0 is the console)
+  uint32 tx = 2;
+  uint32 rx = 3;
+  uint32 baud = 4;
+}
+
+message SpiParams {
+  uint32 sclk = 1;
+  uint32 mosi = 2;
+  uint32 miso = 3;
+  uint32 cs = 4;
+  uint32 clock_hz = 5;
+  uint32 mode = 6;      // 0..3
+}
+
+message GpioParams {
+  uint32 data_pin = 1;
+  uint32 aux_pin = 2;   // 0 = unused (GPIO0 is a strapping pin and never allowed)
+}
+
+// ---------------------------------------------------- sensor profile
+
+message Op {
+  OpType type = 1;
+  bytes tx = 2;            // WRITE / WRITE_READ payload
+  uint32 read_len = 3;     // READ / WRITE_READ / BIT_FRAME (bytes)
+  uint32 delay_us = 4;     // DELAY / GPIO_PULSE width
+  uint32 pin = 5;          // GPIO ops; must be GpioParams.data_pin or aux_pin
+  bool level = 6;          // GPIO ops
+  uint32 timeout_us = 7;   // PULSE_WIDTH / BIT_FRAME; also bounds UART/I2C/SPI waits
+  uint32 threshold_us = 8; // BIT_FRAME only
+  bytes tail = 9;          // UART_SYNC_READ only: expected final bytes of the frame
+}
+
+// ------------------------------------------------------------- decoding
+//
+// Everything below is data; the firmware has no per-sensor decoder. Per cycle:
+//   1. FrameChecks run over the raw buffer (failure => READ_BAD_FRAME)
+//   2. DecodeFields (source = CYCLE) load registers from the raw buffer
+//   3. CalcSteps run in order (RPN over the registers)
+//   4. Reading.values[i] = register i for i < output_count (so r0..r7 are outputs)
+// DecodeFields with source = INIT are evaluated once, after init_ops ran, and keep
+// their registers for the life of the profile (e.g. BME280 calibration constants).
+// Registers are IEEE doubles; there are 32 (r0..r31).
+
+enum DataSource {
+  SRC_CYCLE = 0;           // bytes produced by `ops`, in order
+  SRC_INIT = 1;            // bytes produced by `init_ops`, in order
+}
+
+enum SignMode {
+  SIGN_UNSIGNED = 0;
+  SIGN_TWOS_COMPLEMENT = 1;
+  SIGN_MAGNITUDE = 2;               // top bit of value_bits: 1 = negative
+  SIGN_MAGNITUDE_SET_IS_POSITIVE = 3; // top bit of value_bits: 1 = positive (LD2450 style)
+}
+
+// reg = ((bytes >> shift) masked to value_bits, interpreted per `sign`) * scale + bias
+// Bytes (1..4) are assembled big- or little-endian first. The kept bits do not have
+// to start at bit 0: BME280 20-bit ADC = 3 bytes big-endian, shift 4, value_bits 20.
+message DecodeField {
+  uint32 dest_reg = 1;     // 0..31
+  DataSource source = 2;
+  uint32 src_offset = 3;
+  uint32 width = 4;        // bytes, 1..4
+  bool big_endian = 5;
+  uint32 shift = 6;        // 0..31, right shift of the assembled value
+  uint32 value_bits = 7;   // bits kept after the shift, 1..32; 0 = width*8 - shift
+  SignMode sign = 8;
+  float scale = 9;
+  float bias = 10;
+}
+
+enum CalcOp {
+  CALC_NOP = 0;            // invalid in a program (guards against zeroed tokens)
+  CALC_PUSH_CONST = 1;     // push `value`
+  CALC_PUSH_REG = 2;       // push register `reg`
+  CALC_ADD = 3;
+  CALC_SUB = 4;            // a b -> a-b
+  CALC_MUL = 5;
+  CALC_DIV = 6;            // a b -> a/b ; b == 0 => READ_CALC_ERROR
+  CALC_NEG = 7;
+  CALC_ABS = 8;
+  CALC_SQRT = 9;           // negative => READ_CALC_ERROR
+  CALC_MIN = 10;
+  CALC_MAX = 11;
+  // Comparison / logic (rule `when` expressions only; decode programs reject them).
+  // Results are 1.0 (true) or 0.0 (false); AND/OR/NOT treat non-zero as true.
+  CALC_GT = 12;
+  CALC_LT = 13;
+  CALC_GE = 14;
+  CALC_LE = 15;
+  CALC_EQ = 16;
+  CALC_AND = 17;
+  CALC_OR = 18;
+  CALC_NOT = 19;           // unary
+}
+
+message CalcToken {
+  CalcOp op = 1;
+  uint32 reg = 2;          // PUSH_REG
+  float value = 3;         // PUSH_CONST
+}
+
+// A step consumes the next `token_count` tokens of SensorProfile.program, which
+// must leave exactly one value on the stack (max depth 8); it is stored in dest_reg.
+message CalcStep {
+  uint32 dest_reg = 1;
+  uint32 token_count = 2;
+}
+
+enum CheckKind {
+  CHECK_NONE = 0;
+  CHECK_SUM8 = 1;          // byte at check_offset == (sum of range) mod 256   (DHT22)
+  CHECK_SUM8_NEG = 2;      // byte at check_offset == (0x100 - sum) mod 256    (MH-Z19)
+  CHECK_XOR8 = 3;          // byte at check_offset == xor of range
+}
+
+message FrameCheck {
+  CheckKind kind = 1;
+  uint32 start = 2;        // range in the cycle raw buffer
+  uint32 length = 3;
+  uint32 check_offset = 4;
+}
+
+// What a published value MEANS (and its unit). Models declare the kinds they accept, so a
+// DHT22 temperature can feed an environment model but never a motion model.
+enum ValueKind {
+  VALUE_UNSPECIFIED = 0;
+  VALUE_ACCEL_X_G = 1;
+  VALUE_ACCEL_Y_G = 2;
+  VALUE_ACCEL_Z_G = 3;
+  VALUE_TEMPERATURE_C = 4;
+  VALUE_HUMIDITY_PCT = 5;
+  VALUE_PRESSURE_PA = 6;
+  VALUE_DISTANCE_CM = 7;
+  VALUE_CO2_PPM = 8;
+  VALUE_OTHER = 9;
+  VALUE_RADAR_DISTANCE_MM = 10;  // LD2450 target distance (y), mm
+}
+
+message SensorProfile {
+  uint32 sensor_id = 1;    // 1..255, unique across the node
+  BusType bus = 2;
+  oneof params {
+    I2cParams i2c = 3;
+    UartParams uart = 4;
+    SpiParams spi = 5;
+    GpioParams gpio = 6;
+  }
+  uint32 period_ms = 7;
+  repeated Op ops = 8;                 // run every cycle
+  repeated DecodeField decode = 9;
+  bool enabled = 10;       // false = stop this bus; everything else is then ignored (unless dormant, below)
+  repeated Op init_ops = 11;           // run once when the profile starts
+  repeated CalcStep calc = 12;
+  repeated CalcToken program = 13;     // shared token pool for all calc steps
+  repeated FrameCheck checks = 14;
+  uint32 output_count = 15;            // 0..8 values published per Reading
+  repeated ValueKind output_kinds = 16;// meaning of each output; length must equal output_count
+  // dormant = true (with enabled = false): stop this bus, but KEEP this complete profile stored (and persisted) as a
+  // sleeping sensor. A rule action RACT_SENSOR_START can start it later without a new configuration; it never
+  // starts by itself after a reboot. A dormant profile is validated like an enabled one and reserves its pins.
+  bool dormant = 17;
+}
+
+// ---------------------------------------------- configuration + ACK
+
+// One ConfigApply may replace the active profile of any subset of buses; buses
+// that are not mentioned keep running unchanged.
+message ConfigApply {
+  uint32 generation = 1;
+  repeated SensorProfile profiles = 2;
+}
+
+message ApplyAck {
+  uint32 generation = 1;
+  ApplyPhase phase = 2;
+  Reason reason = 3;
+  uint32 sensor_id = 4;    // offending/affected sensor, 0 if request-level
+  uint32 profile_index = 5;// index in ConfigApply.profiles of the offending profile
+  uint32 detail = 6;       // op or decode-field index within that profile, when relevant
+}
+
+message Reading {
+  uint32 sensor_id = 1;
+  uint32 generation = 2;
+  uint64 timestamp_us = 3;
+  bool valid = 4;
+  ReadError error = 5;
+  repeated float values = 6;
+  bytes raw = 7;
+}
+
+message CommittedConfig {
+  uint32 schema_version = 1;
+  uint32 generation = 2;
+  repeated SensorProfile profiles = 3;
+}
+
+// ------------------------------------------------------ rules (Rule Engine)
+// Physical sensors use ids 1..127; ids 128..255 are VIRTUAL sensors fed by the node bridge.
+// A rule watches up to 6 variables (a statistic over a sliding window of one sensor value),
+// evaluates an RPN `when` expression over them (PUSH_REG reg = variable index) and runs ONE bounded
+// action. Actions never feed back into rule evaluation, so rules cannot recurse.
+
+enum RuleStat {
+  STAT_LATEST = 0;
+  STAT_PREV = 1;      // previous sample (needs 2 samples)
+  STAT_DELTA = 2;     // latest - previous
+  STAT_MEAN = 3;      // over `window` samples
+  STAT_MIN = 4;
+  STAT_MAX = 5;
+  STAT_STDDEV = 6;    // population standard deviation
+}
+
+message RuleVar {
+  uint32 sensor_id = 1;
+  uint32 value_index = 2;
+  RuleStat stat = 3;
+  uint32 window = 4;  // 1..16 samples
+}
+
+enum RuleActionType {
+  RACT_UNSPECIFIED = 0;
+  RACT_LOG = 1;           // serial log + notification message
+  RACT_GPIO_SET = 2;      // pin := level
+  RACT_GPIO_TOGGLE = 3;
+  RACT_GPIO_PULSE = 4;    // pin := level for duration_ms, then back
+  RACT_PWM = 5;           // pin duty_permille 0..1000
+  RACT_NOTIFY = 6;        // MQTT notification carrying `text` and the first variable
+  RACT_ML_TRIGGER = 7;    // request an inference on the next full window
+  RACT_REMOTE_CMD = 8;    // RUN/STOP/CLEAR on `target_node` (min cooldown 1 s)
+  RACT_SENSOR_START = 9;  // start the DORMANT sensor `sensor_id`; duration_ms > 0 = stop it again after that time
+  RACT_SENSOR_STOP = 10;  // stop a sensor that an earlier RACT_SENSOR_START woke (never touches configured sensors)
+}
+
+enum RemoteCmd {
+  RCMD_UNSPECIFIED = 0;
+  RCMD_RUN = 1;
+  RCMD_STOP = 2;
+  RCMD_CLEAR = 3;
+}
+
+message RuleAction {
+  RuleActionType type = 1;
+  uint32 pin = 2;
+  bool level = 3;
+  uint32 duration_ms = 4;
+  uint32 duty_permille = 5;
+  string text = 6;
+  string target_node = 7;
+  RemoteCmd cmd = 8;
+  uint32 sensor_id = 9;      // RACT_SENSOR_START / RACT_SENSOR_STOP: physical sensor id 1..127
+}
+
+message Rule {
+  uint32 rule_id = 1;          // 1..255, unique
+  bool enabled = 2;
+  repeated RuleVar vars = 3;
+  repeated CalcToken when = 4;
+  RuleAction action = 5;
+  uint32 cooldown_ms = 6;      // >= 100 ms between firings
+  bool edge_triggered = 7;     // fire only on false -> true
+}
+
+message RuleSetApply {
+  uint32 generation = 1;
+  repeated Rule rules = 2;
+}
+
+// --------------------------------------------------------- node bridge
+message VirtualSource {
+  uint32 local_sensor_id = 1;  // 128..255
+  string remote_node = 2;
+  uint32 remote_sensor_id = 3; // a PHYSICAL sensor (1..127) on the remote node
+  uint32 max_age_ms = 4;       // older than this => reading reported invalid
+  uint32 period_ms = 5;        // expected remote period (for ML period checks)
+  repeated ValueKind kinds = 6;// meaning of each value; remote Reading must carry exactly this many
+}
+
+message BridgeApply {
+  uint32 generation = 1;
+  repeated VirtualSource sources = 2;
+}
+
+// ------------------------------------------- persisted node state (NVS)
+// Everything besides the sensor configuration that must survive a reboot. Restored through the same
+// validators as live requests; anything that no longer validates is dropped, never trusted.
+message NodeState {
+  uint32 schema_version = 1;        // 1
+  RuleSetApply rules = 2;
+  BridgeApply bridge = 3;
+  uint32 model_generation = 4;      // last accepted ModelControl generation (stale protection survives reboots)
+  ModelKind mapped_kind = 5;        // model the saved input mapping belongs to
+  repeated InputSource inputs = 6;  // saved ML input mapping (empty = none)
+}
+
+// ------------------------------------------------ commands + notifications
+message NodeCommand {          // RUN / STOP / CLEAR for the receiving node (also sent by rules)
+  RemoteCmd cmd = 1;
+}
+
+message Notification {         // rule LOG / NOTIFY actions
+  uint32 rule_id = 1;
+  string text = 2;
+  float value = 3;
+  uint64 timestamp_us = 4;
+}
+
+// --------------------------------------------------- heartbeat / diagnostics
+message Heartbeat {
+  string node_id = 1;
+  uint64 uptime_ms = 2;
+  uint32 config_generation = 3;
+  repeated uint32 active_sensor_ids = 4;
+  ModelState model_state = 5;
+  ModelKind model_kind = 6;
+  uint32 model_version = 7;
+  ModelReason model_reason = 8;
+  uint32 readings_ok = 9;
+  uint32 read_errors = 10;
+  uint32 overruns = 11;
+  uint32 rules_fired = 12;
+  uint32 rule_errors = 13;
+  uint32 free_heap = 14;
+  uint32 rule_generation = 15;
+  uint32 bridge_generation = 16;
+}
+
+// ------------------------------------------- model transfer + control
+// DRAFT - schema only, not yet implemented in firmware.
+
+enum ModelKind {
+  MODEL_UNSPECIFIED = 0;
+  MODEL_MOTION = 1;        // Model A: GY-511 motion classification
+  MODEL_ENVIRONMENT = 2;   // Model B: temperature/humidity classification
+  MODEL_ANOMALY = 3;       // Model C: multi-sensor anomaly detector (8 role slots, see ml/ANOMALY_SPEC.md)
+}
+
+enum ModelFormat {
+  FORMAT_UNSPECIFIED = 0;
+  FORMAT_TFLITE = 1;
+  FORMAT_ESPDL = 2;
+}
+
+// Preprocessing is a named, versioned algorithm implemented once in firmware (ml_features) and
+// once in ml/common.py; the contract selects it and parameterises the window.
+enum Preprocessing {
+  PREPROC_UNSPECIFIED = 0;
+  PREPROC_MOTION_STATS_V1 = 1;  // 3 channels -> 11 features (see ml/README.md)
+  PREPROC_ENV_TREND_V1 = 2;     // 2 channels -> 6 features
+  PREPROC_SLOT_STATS_V1 = 3;    // 10 channels in 8 role slots -> 32 features (ml/ANOMALY_SPEC.md)
+}
+
+// Embedded at the start of every model package:  "AMDL" | u32 LE contract_len | ModelContract | .tflite
+message ModelContract {
+  uint32 contract_version = 1;           // 1
+  ModelKind kind = 2;
+  uint32 model_version = 3;
+  ModelFormat format = 4;
+  repeated ValueKind channels = 5;       // input channel i must be fed a value of this kind
+  uint32 window_samples = 6;
+  uint32 sample_period_ms = 7;
+  uint32 period_tolerance_pct = 8;       // allowed deviation of actual sample spacing
+  uint32 max_age_ms = 9;                 // newest sample older than this => inputs stale
+  Preprocessing preprocessing = 10;
+  uint32 feature_count = 11;             // = model input tensor elements
+  uint32 tensor_arena_bytes = 12;
+  float input_scale = 13;
+  int32 input_zero_point = 14;
+  float output_scale = 15;
+  int32 output_zero_point = 16;
+  repeated string labels = 17;           // output class names, in output order
+  bytes tflite_sha256 = 18;              // digest of the embedded .tflite
+  uint32 stride_samples = 19;            // run inference every this many new samples (0 = window_samples)
+  uint32 output_count = 20;              // output tensor elements (0 = labels.size); anomaly model: = feature_count
+  float anomaly_threshold = 21;          // MODEL_ANOMALY: score above this is an anomaly
+}
+
+// Why a model/mapping request or the running inference was refused or suspended.
+enum ModelReason {
+  MODEL_REASON_NONE = 0;
+  MODEL_REASON_NO_ACTIVE_MODEL = 1;
+  MODEL_REASON_BAD_PACKAGE = 2;           // magic/length/contract decode/limits
+  MODEL_REASON_DIGEST_MISMATCH = 3;
+  MODEL_REASON_KIND_MISMATCH = 4;         // package kind differs from the transfer's kind
+  MODEL_REASON_UNSUPPORTED_FORMAT = 5;
+  MODEL_REASON_UNSUPPORTED_PREPROC = 6;
+  MODEL_REASON_INPUT_COUNT_MISMATCH = 7;  // inputs given != contract channels
+  MODEL_REASON_DUPLICATE_SLOT = 8;
+  MODEL_REASON_BAD_SLOT = 9;              // feature_slot >= channels
+  MODEL_REASON_SENSOR_NOT_ACTIVE = 10;    // sensor id not in the running configuration
+  MODEL_REASON_VALUE_INDEX_RANGE = 11;    // value_index >= sensor output_count
+  MODEL_REASON_VALUE_KIND_MISMATCH = 12;  // sensor value means something else (e.g. temperature -> motion model)
+  MODEL_REASON_INPUTS_STALE = 13;
+  MODEL_REASON_PERIOD_MISMATCH = 14;      // sensor period incompatible with the model's sample period
+  MODEL_REASON_READING_INVALID = 15;
+  MODEL_REASON_RUNTIME_REJECTED = 16;     // TFLM could not allocate / resolve ops / shapes differ
+  MODEL_REASON_NO_STAGED_MODEL = 17;
+  MODEL_REASON_TRANSFER_MISMATCH = 18;    // activate names a transfer that is not the staged one
+  MODEL_REASON_STORAGE_ERROR = 19;
+  MODEL_REASON_STALE_GENERATION = 20;
+  MODEL_REASON_NO_INPUTS = 21;            // model active but no input mapping set yet
+}
+
+message ModelChunk {
+  uint32 transfer_id = 1;
+  uint32 generation = 2;
+  ModelKind kind = 3;
+  ModelFormat format = 4;
+  uint32 model_version = 5;
+  uint32 seq = 6;
+  uint32 total_chunks = 7;
+  uint32 total_size = 8;
+  bytes sha256 = 9;        // whole-file digest, identical in every chunk
+  bytes data = 10;
+}
+
+enum ChunkStatus {
+  CHUNK_OK = 0;
+  CHUNK_DUPLICATE = 1;
+  CHUNK_OUT_OF_ORDER = 2;
+  CHUNK_BAD_LENGTH = 3;
+  CHUNK_BAD_TRANSFER = 4;
+  CHUNK_STORAGE_ERROR = 5;
+  CHUNK_DIGEST_MISMATCH = 6;
+}
+
+message ChunkAck {
+  uint32 transfer_id = 1;
+  uint32 generation = 2;
+  uint32 seq = 3;
+  ChunkStatus status = 4;
+  uint32 next_expected = 5;
+}
+
+enum ModelAction {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_ACTIVATE = 1;
+  ACTION_SET_INPUTS = 2;
+  ACTION_ABORT_TRANSFER = 3;
+  ACTION_QUERY = 4;
+}
+
+message InputSource {
+  uint32 sensor_id = 1;
+  uint32 value_index = 2;
+  uint32 feature_slot = 3; // position in the model's declared feature order
+}
+
+message ModelControl {
+  uint32 generation = 1;
+  ModelAction action = 2;
+  ModelKind kind = 3;
+  uint32 transfer_id = 4;
+  repeated InputSource inputs = 5;
+}
+
+enum ModelState {
+  MODEL_STATE_NONE = 0;
+  MODEL_STATE_STAGED = 1;
+  MODEL_STATE_ACTIVE = 2;
+  MODEL_STATE_REJECTED = 3;
+  MODEL_STATE_SUSPENDED = 4;   // active model kept, inputs currently unusable
+}
+
+message ModelStatus {
+  uint32 generation = 1;
+  ModelKind kind = 2;
+  uint32 model_version = 3;
+  ModelState state = 4;
+  ModelReason reason = 5;
+}
+
+message InferenceResult {
+  ModelKind kind = 1;
+  uint32 model_version = 2;
+  uint32 generation = 3;
+  uint64 timestamp_us = 4;
+  uint32 predicted_class = 5;
+  repeated float scores = 6;
+  uint32 inference_us = 7;
+  float anomaly_score = 8;               // MODEL_ANOMALY: mean squared reconstruction error over the present slots
+  float anomaly_threshold = 9;
+  bool anomaly = 10;
+  uint32 slot_mask = 11;                 // bit s set = slot s was present
+  repeated float slot_errors = 12;       // per slot (0 for an absent slot)
+}

@@ -1,0 +1,50 @@
+{
+  "data_provenance": "SYNTHETIC - not validated on real sensors; normal cargo operation only for training; anomalies injected for evaluation",
+  "false_alarm_rate": 0.0008333333333333334,
+  "final_loss": {
+    "train": 0.002126088598743081,
+    "val": 0.002122715814039111
+  },
+  "ops": [
+    "FULLY_CONNECTED"
+  ],
+  "p99_7_normal": 0.01021239514917132,
+  "per_anomaly": {
+    "co2": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 1.0
+    },
+    "distance": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 1.0
+    },
+    "equipment": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 1.0
+    },
+    "humidity": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 1.0
+    },
+    "motion": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 0.8966666666666666
+    },
+    "pressure": {
+      "attribution_rate_among_hits": 0.9979973297730307,
+      "detection_rate": 0.9986666666666667
+    },
+    "radar": {
+      "attribution_rate_among_hits": 1.0,
+      "detection_rate": 0.9833333333333333
+    },
+    "temperature": {
+      "attribution_rate_among_hits": 0.9793333333333333,
+      "detection_rate": 1.0
+    }
+  },
+  "seed": 20261113,
+  "task": "anomaly",
+  "tflite_bytes": 7448,
+  "threshold": 0.01276549393646415
+}

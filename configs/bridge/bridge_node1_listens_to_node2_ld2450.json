@@ -1,0 +1,17 @@
+{
+ "generation": "auto",
+ "sources": [
+  {
+   "local_sensor_id": 130,
+   "remote_node": "node2",
+   "remote_sensor_id": 3,
+   "max_age_ms": 1000,
+   "period_ms": 100,
+   "kinds": [
+    "VALUE_OTHER",
+    "VALUE_RADAR_DISTANCE_MM",
+    "VALUE_OTHER"
+   ]
+  }
+ ]
+}
