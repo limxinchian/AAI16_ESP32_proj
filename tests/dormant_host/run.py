@@ -52,7 +52,7 @@ def rules(gen, rs):
 
 def main():
     OUT.mkdir(exist_ok=True)
-    gy, dht = sp.gy511(pb), sp.dht22(pb)
+    dht = sp.dht22(pb)
     files = {}
     files["cfg_dormant.bin"] = cfg(1, [sp.dht22(pb), dormant(sp.gy511(pb))])
     bad = sp.gy511(pb); bad.dormant = True                       # enabled AND dormant

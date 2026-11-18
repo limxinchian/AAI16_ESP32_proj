@@ -9,7 +9,6 @@ Artifacts -> ml/artifacts/<task>/ :
   SHA256SUMS
 """
 import hashlib
-import json
 import pathlib
 import sys
 

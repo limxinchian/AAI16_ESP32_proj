@@ -1,9 +1,10 @@
 """The eight proposed sensors as configuration data (handoff section 2).
 
-STATUS: authored from recalled datasheet/protocol knowledge. They are NOT verified against
-the real datasheets or hardware yet - check every register, timing, polarity and scale before
-the demo (see docs in STATUS.md). The firmware has no per-sensor code: each profile below is
-just a ConfigApply payload built from generic ops, decode fields and RPN calc steps.
+STATUS: authored from datasheet/protocol knowledge, then exercised on real ESP32-S3 boards (GY-511, DHT22, BME280,
+MAX6675, MH-Z19B, LD2450, RC522 observed working; the HC-SR04 profile is team-reported only). Hardware findings are
+recorded where they apply (for example the RC522 clone chip needs the receiver-gain write in its init). A line-by-line
+check of every register against each datasheet has NOT been done. The firmware has no per-sensor code: each profile
+below is just a ConfigApply payload built from generic ops, decode fields and RPN calc steps.
 
 Configuration A: DHT22 + GY-511 + LD2450 + RC522
 Configuration B: HC-SR04 + BME280 + MH-Z19 + MAX6675

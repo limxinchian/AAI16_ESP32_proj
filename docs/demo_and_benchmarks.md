@@ -16,7 +16,7 @@ No number in the "measured" tables below is invented: the only figures are ones 
    (DHT22 temp, humidity); after swapping the I2C/GPIO sensors, point it at the BME280: `5:0:0 5:2:1`.
 6. Corrupt upload: flip a byte inside the model payload of a copy of the package and upload it: the node answers `DIGEST_MISMATCH` and keeps its model.
 7. Serial console (115200 8N1 on the console UART/USB): `HELP`, `SHOW`, `STOP`, `RUN`, `CLEAR`, `REBOOT`, `CFG <hex>`.
-8. Reboot (`REBOOT`) and check that `SHOW` still lists the sensors (**not yet verified on hardware**).
+8. Reboot (`REBOOT`, or power-cycle) and check that the node comes back with its configuration, dormant profiles, rules, bridge and model. This was observed on node1; sensors that a rule started are asleep again after a reboot by design.
 
 Offline rehearsal without hardware: `python tools/node_client.py selftest`, `python tools/run_all_tests.py`,
 `python tools/qemu_session.py` (see STATUS.md).

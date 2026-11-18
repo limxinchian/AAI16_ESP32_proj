@@ -53,5 +53,5 @@ rejected, DHT22 → BME280 temperature/humidity for the environment model is acc
 | int8 quantization == TFLite's | 225/225 feature values identical |
 | int8 output decode + argmax == TFLite interpreter | all 25 vectors |
 | Package parse/digest/limits, selector compat, streaming, suspension, chunked upload/ACK/stage/activate/rollback/reboot | `tests/ml_host` (4315 checks) |
-| TFLM runs these `.tflite` files on the ESP32-S3 | **NOT verified** (no ESP-IDF here) |
-| Same logits on the board as on the PC | **NOT verified** |
+| TFLM runs these `.tflite` files on the ESP32-S3 | Observed on two boards (motion, environment, anomaly; `inference_us` about 200-340 us with ESP-NN); the logs are not archived |
+| Same logits on the board as on the PC | **NOT verified** (only the predicted labels were observed) |

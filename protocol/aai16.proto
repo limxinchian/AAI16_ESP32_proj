@@ -1,8 +1,7 @@
 // AAI16 ESP32-S3 configurable edge node - wire protocol (nanopb, bounded).
 //
-// Status: DRAFT v1 for team/supervisor review (handoff section 4.2).
-//   Milestone 1 implements and tests: ConfigApply, ApplyAck, Reading, CommittedConfig.
-//   The model/ML messages below are schema-only so far (no firmware logic yet).
+// Status: v1, implemented in firmware and covered by the host test suites (handoff section 4.2).
+//   Config/rule/bridge/model/command/telemetry messages are all in use; see docs/mqtt_protobuf_protocol.md.
 //
 // Every repeated/bytes field has a fixed maximum in aai16.options; nanopb then
 // generates fixed-size C structs, so no heap is used while decoding.
@@ -443,7 +442,7 @@ message Heartbeat {
 }
 
 // ------------------------------------------- model transfer + control
-// DRAFT - schema only, not yet implemented in firmware.
+// Implemented in firmware: components/ml_core (model_store, ml_selector) and components/node_core.
 
 enum ModelKind {
   MODEL_UNSPECIFIED = 0;

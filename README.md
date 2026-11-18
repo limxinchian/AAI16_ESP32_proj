@@ -36,6 +36,18 @@ The original specification is `ESP32-S3_Codex_Implementation_Handoff.md`.
 
 ## Quick start (Windows, PowerShell)
 
+**One command (recommended):** `tools\build_all.ps1` checks the tools, runs every host test, builds each node with its own
+node id / Wi-Fi / broker settings (no `menuconfig` needed) and can flash them.
+
+```powershell
+.\tools\build_all.ps1 -Ssid "MyHotspot" -Password "secret" -Broker 172.20.10.2        # tests + build node1 and node2
+.\tools\build_all.ps1 -SkipTests -Flash -Ports @{ node1 = 'COM12'; node2 = 'COM11' }  # rebuild with remembered Wi-Fi, then flash
+.\tools\build_all.ps1 -TestsOnly                                                       # only the checks and host tests
+Get-Help .\tools\build_all.ps1 -Full                                                   # every option
+```
+
+The same steps by hand:
+
 ```powershell
 # one-time: host tooling (project-local venv)
 python -m venv .venv

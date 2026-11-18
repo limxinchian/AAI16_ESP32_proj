@@ -32,7 +32,7 @@ threshold comes from about 12 minutes of recording; long-run (hours) stability; 
 
 | What | Command (repo root, PowerShell) |
 |---|---|
-| Host tests (6 suites 5,155 checks, + 28 topic cases, 8 client/broker checks, client self-test) | `.venv\Scripts\python.exe tools\run_all_tests.py` |
+| Host tests (12 suites, about 6,300 checks, plus the laptop client self-test) | `.venv\Scripts\python.exe tools\run_all_tests.py` |
 | Target build | `. .\tools\idf_env.ps1 ; idf.py set-target esp32s3 ; idf.py build` (ESP-IDF 6.1 from `C:\esp\v6.1`, tools from `C:\Espressif`; the script sets session variables only) |
 | Run the real image in QEMU | merge image + `.venv\Scripts\python.exe tools\qemu_session.py` (steps in its docstring; QEMU unpacked to `tools/qemu` from `C:\Espressif\dist`) |
 | Retrain the two models | `.venv\Scripts\python.exe ml\train_motion.py` and `ml\train_environment.py` |
@@ -54,8 +54,8 @@ threshold comes from about 12 minutes of recording; long-run (hours) stability; 
 | Executor + per-bus scheduler | `components/sensor_runtime/` | 44 checks (simulated devices) | yes | runs 4 sensorless buses 4+ s without hang/crash | - |
 | ML: 2 models (motion, environment), packages, contracts | `ml/` | features match Python; quantization identical to TFLite 225/225 | - | - | - |
 | ML logic: selector, model store, SHA-256 | `components/ml_core/` | 4315 checks | yes | - | - |
-| Rule engine, bridge, heartbeat, REPL | `components/node_services/` | 147 checks | yes | REPL commands verified | - |
-| Node core (wiring, fan-out, model flow, recovery incl. rules / bridge / ML mapping / model generation) | `components/node_core/` | 483 checks; **7 inferences matched recorded int8 tensors of the real trained models** (only the matrix multiply is a double) | yes | boots, commands work | - |
+| Rule engine, bridge, heartbeat, REPL | `components/node_services/` | 152 checks | yes | REPL commands verified | - |
+| Node core (wiring, fan-out, model flow, recovery incl. rules / bridge / ML mapping / model generation) | `components/node_core/` | 487 checks; **8 inferences matched recorded int8 tensors of the real trained models** (only the matrix multiply is a double) | yes | boots, commands work | - |
 | ESP-IDF platform layer: I2C/UART/SPI/GPIO drivers, NVS + flash banks, rule outputs, Wi-Fi + MQTT, TFLM wrapper | `components/platform_esp/`, `main/` | n/a (hardware code) | **yes (393,728 B image; clean rebuild from scratch, no warnings from project code)** | boots; NVS write verified | **no** |
 
 QEMU session (`tools/qemu_session.py`, 17 checks): boot, 8 MB PSRAM, NVS ready, HELP/SHOW, forbidden-pin config
@@ -69,22 +69,30 @@ corruption/crash); `spi_device_polling_transmit` could hang the node forever (no
 static buffers); empty committed-config restore (found by the host node test); the model-bank erase interface
 needed a size so a 3 KB model does not erase a 3 MB bank.
 
-## Not verified (do not claim)
+## Not verified / not archived (do not claim)
 
-- **Reboot persistence.** The firmware writes the config to NVS (log: `nvs wrote cfg`), and the NVS page is in
-  the flash image, but **this QEMU build does not keep flash across a restart**: a control program using only
-  stock ESP-IDF NVS (`tests/qemu_nvs_probe`) reads `boots=0` after every `esp_restart()`. Restoration needs a real board.
-- **Real sensors and bus timing.** Drivers compile; I2C/UART/SPI/GPIO behavior, the DHT22 bit-bang inside a
-  critical section, and HC-SR04 echo timing are untested. Sensor profiles (`tools/sensor_profiles.py`) were written
-  from recalled datasheet knowledge and **must be checked against datasheets and hardware** (LD2450 sign
-  convention, GY-511 scaling, DHT22 start pulse, MAX6675 open-circuit bit, etc.).
-- **Wi-Fi/MQTT on the node** end to end (topic scheme in `plat_net.c`), incl. 28 KB message reassembly. The laptop client has run against a real local broker, but only with a scripted mock node.
-- **TFLM on the chip.** `plat_ml.cc` compiles against esp-tflite-micro; it has never loaded a model. The contract
-  arena (16 KB) is a declared guess; the loader logs real arena use on first load. ESP-NN vs reference kernel
-  comparison and latency/memory benchmarks (AC-16, AC-17) are not done.
-- **Model quality.** Both models were trained on **synthetic** data (100 % on held-out synthetic data); real
-  GY-511/DHT22/BME280 recordings are needed before any accuracy claim.
-- Persistence of rules, bridge settings, ML input mapping and the model generation counter is implemented and host-tested (483-check node suite, incl. a damaged-state case); like the config, its restore after a reboot is **not demonstrable in QEMU** and needs a board.
+Hardware evidence in this project is **live session output** from two boards; apart from the CSV recordings in `data/anomaly/`
+it was not saved as log files. Treat it as reported, not archived, until logs are added.
+
+- **Reboot persistence.** Observed on a real board (node1 restored its configuration, dormant profiles, rules, bridge settings and
+  model after a reboot). **QEMU still does not keep flash across a restart** (`tests/qemu_nvs_probe` reads `boots=0`), so this
+  cannot be shown in the emulator.
+- **Sensors.** Seven of the eight sensor profiles were observed working on boards (GY-511, DHT22, BME280, MAX6675, MH-Z19B, LD2450,
+  RC522, the last after adding the receiver-gain write for its clone chip). **The HC-SR04 is team-reported only.** A line-by-line
+  datasheet check of every register, scale and polarity has not been done. The DHT22 (polling bit capture with interrupts off for
+  about 5 ms, `plat_bus.c`) times out on some reads when several sensors start together on one node; the cause is not isolated.
+- **Wi-Fi/MQTT.** Works on two boards (configs, rules, bridge, model chunks, telemetry). A ConfigApply near the 28 KB maximum was
+  never sent to a board, and an interrupted model upload was never tried on hardware.
+- **TFLM on the chip.** The motion, environment and anomaly models load and run (about 200-340 us per inference with ESP-NN). Not done:
+  the ESP-NN versus reference timing comparison (the reference image builds and contains no ESP-NN kernels, but was never timed),
+  logit-level equality between board and PC, and memory/latency benchmarks as archived evidence (AC-16, AC-17).
+- **Timing.** A 12-minute recording (`data/anomaly/normal_01.csv`, analysed with `tools/analyze_sampling_timing.py`) shows no skipped
+  sampling interval on four streams (worst lateness 10.8 ms). That does not cover model uploads, the node task's execution time or
+  interrupt-off time, and zero detected skipped intervals does not by itself prove zero deadline violations.
+- **Model quality.** The motion and environment models were trained on **synthetic** data; the anomaly model has a version trained
+  partly on about 12 minutes of real recordings (temperature, humidity, pressure, equipment temperature only). No field accuracy claim.
+- Persistence of rules, bridge settings, ML input mapping and the model generation counter is host-tested (including a damaged-state
+  case) and its reboot restore was observed on node1.
 
 ## Findings that need a decision
 

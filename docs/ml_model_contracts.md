@@ -1,7 +1,8 @@
-# ML model contracts (exactly two models)
+# ML model contracts (two agreed models plus one optional extra)
 
 Per handoff §5 and the team decision: **Model A - Motion classification** and **Model B - Environmental classification**.
-No anomaly/autoencoder model. Details, data provenance and how to retrain: `ml/README.md`.
+A third, optional **Model C - anomaly detector** was added later as a team extension (see the last section); it is outside the
+original two-model scope and is not required. Details, data provenance and how to retrain: `ml/README.md`.
 
 > **Both models are trained on SYNTHETIC data and score 100 % on held-out synthetic data. That proves the pipeline,
 > not field accuracy. Collect real labelled windows (below) and retrain before quoting any accuracy.**
@@ -46,3 +47,17 @@ recording (one label per file, several separate sessions per class); `ml/train_m
 splits **by recording session** so overlapping windows never leak into the test set, and writes a new model package. `report.json` states
 the provenance (REAL recordings), the split mode and the honest accuracy; fewer than 3 sessions per class falls back to an optimistic
 chronological split and says so.
+
+## Model C - anomaly detector (optional extra, `MODEL_ANOMALY`)
+
+Full design: `ml/ANOMALY_SPEC.md`. Summary of its contract (`PREPROC_SLOT_STATS_V1`):
+
+- 10 input channels in 8 role slots (motion from three acceleration axes, temperature, humidity, pressure, CO2, distance, radar
+  distance, equipment temperature); **any subset of slots may be mapped** (a motion slot needs all three axes).
+- 4 rate-independent features per slot (32 in total), built from exponential averages with time constants 3 s, 15 s, 90 s and 8 s.
+  A slot counts as present when it has at least 5 readings and its newest reading is not older than `max_age_ms` (6000).
+- Autoencoder (Dense 24-12-24-32, int8, `FULLY_CONNECTED` only); the firmware computes the score from the int8 tensors as the mean
+  squared error over the features of the present slots and compares it with `anomaly_threshold`. The inference result also carries
+  the per-slot errors and the slot mask, so the most unusual slot can be named.
+- Training data: a synthetic version and a version trained partly on real recordings (temperature, humidity, pressure, equipment
+  temperature); no field accuracy claim. Host tests: `tests/anomaly_host`.

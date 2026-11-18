@@ -685,8 +685,10 @@ upload chunk 256-1024 bytes (default 512)
 
 ## What is not verified (so check it while you follow this guide)
 
-- Every wiring table and expected reading is from datasheet knowledge and the code's profiles; none was run on hardware.
-  The pin labels on your modules may differ.
-- Mosquitto installation steps (I did not install it here).
-- Wi-Fi/MQTT between the real node and the broker; the client was tested only against a local broker with a stand-in node.
-- On-chip inference with TensorFlow Lite Micro; reboot persistence; the DHT22 and HC-SR04 timing.
+- The wiring tables and expected readings come from datasheet knowledge and the code's profiles. Seven of the eight sensors were
+  observed working on boards with these pins; the HC-SR04 was not re-observed. The pin labels on your modules may differ.
+  Two findings from the boards: the MH-Z19B needs 5 V and TX/RX crossed (a wrong wiring only shows up as READ_TIMEOUT), and the
+  RC522 clone chip needs the receiver-gain write that is part of the profile.
+- Mosquitto installation steps (they were followed on a Windows laptop; your steps may differ).
+- Not yet measured: the HC-SR04 timing, the ESP-NN speed-up against the reference build, long (hour-scale) runs, and a model
+  upload while a fast sensor (GY-511, 20 ms) is running.

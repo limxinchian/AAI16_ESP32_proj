@@ -306,13 +306,22 @@ static void scenario(void)
 
     puts("5. failed upload leaves the running model alone");
     const uint32_t inf_before = N.inferences;
-    CHECK(upload("motion.amdl", aai16_ModelKind_MODEL_MOTION, 3, 512, 700) == 1000 + aai16_ChunkStatus_CHUNK_DIGEST_MISMATCH + 1 - 1 + 0 || true);
+    CHECK(upload("motion.amdl", aai16_ModelKind_MODEL_MOTION, 3, 512, 700) == 1000 + (int)aai16_ChunkStatus_CHUNK_DIGEST_MISMATCH); /* the corrupted upload is refused with exactly this status */
     {
         aai16_ChunkAck a; DECODE(last(OUT_CHUNK_ACK), aai16_ChunkAck, a);
         CHECK(a.status == aai16_ChunkStatus_CHUNK_DIGEST_MISMATCH);
     }
+    reset_log();
     send_ctrl(6, aai16_ModelAction_ACTION_ACTIVATE, aai16_ModelKind_MODEL_MOTION, 3, NULL, 0);
-    CHECK(last_status().reason == R(NO_STAGED_MODEL) || last_status().state != aai16_ModelState_MODEL_STATE_NONE);
+    {   /* the corrupted transfer never became STAGED: activating it must be REFUSED with exactly this reason */
+        bool refused = false;
+        for (int i = 0; i < NLOG; i++) {
+            if (LOG_[i].kind != OUT_MODEL_STATUS) continue;
+            aai16_ModelStatus s; DECODE(&LOG_[i], aai16_ModelStatus, s);
+            refused |= s.state == aai16_ModelState_MODEL_STATE_REJECTED && s.reason == R(NO_STAGED_MODEL);
+        }
+        CHECK(refused);
+    }
     CHECK(N.model_kind == aai16_ModelKind_MODEL_ENVIRONMENT && M.loaded_kind == aai16_ModelKind_MODEL_ENVIRONMENT);
     send_ctrl(6, aai16_ModelAction_ACTION_ACTIVATE, aai16_ModelKind_MODEL_MOTION, 3, NULL, 0);
     send_ctrl(5, aai16_ModelAction_ACTION_SET_INPUTS, aai16_ModelKind_MODEL_ENVIRONMENT, 0, dhtin, 2);   /* stale generation */

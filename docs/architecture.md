@@ -44,6 +44,7 @@ Layers (each is plain C with a hardware interface, host-tested; `platform_esp` i
 | E rules | `in/rules` -> `re_apply` (atomic) -> actions through platform hooks |
 | F bridge | other node's `out/reading/<id>` -> `bridge_on_remote` -> virtual sensor -> rules / ML |
 | G serial + recovery | console -> `repl_exec` -> same handlers; boot -> `cm_restore` + active model reload |
+| H dormant sensors | `ConfigApply` with `dormant` -> stored (not running); rule action `RACT_SENSOR_START` -> `rh_sensor` -> `cm_dormant_by_id` -> `rt_apply` (RAM only; optional timer checked in `node_tick`); `RACT_SENSOR_STOP` or a config for the bus ends it |
 
 ## Concurrency and memory
 
@@ -51,3 +52,12 @@ Layers (each is plain C with a hardware interface, host-tested; `platform_esp` i
 - Buses are serviced one after another in that task: a blocking op delays other buses' timestamps by its duration.
 - Static internal RAM use of the image is ~82 KB (DIRAM); the 8 MB PSRAM holds the node, message reassembly buffers and model copies.
 - No JSON anywhere; no unbounded allocation during decode (nanopb static structs).
+
+## Added after the first version
+
+- **Dormant sensors** (flow H above): a profile can be stored but not running and started by a rule. A bus holds either a running or
+  a dormant profile; dormant profiles reserve their pins and are persisted, but never start by themselves after a reboot.
+- **Model C (optional anomaly detector)**: a third model kind with slot features, a presence mask and per-slot error attribution
+  (`ml_core/ml_features.c`, `ml_selector.c`, `ml/ANOMALY_SPEC.md`).
+- **Laptop helpers**: `tools/json_bridge*.py` mirror node Protobuf as JSON for MQTTX (laptop side only; the node never sees JSON),
+  `tools/record_slot_data.py` and `tools/analyze_sampling_timing.py` record and analyse real data, `tools/build_all.ps1` builds the nodes.

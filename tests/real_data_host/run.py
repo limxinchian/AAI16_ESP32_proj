@@ -11,7 +11,6 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import threading
 import time
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")

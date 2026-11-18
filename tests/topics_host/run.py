@@ -45,7 +45,7 @@ def main():
     for t in nc.IN_TOPICS:
         classify(f"aai16/{NODE}/in/{t}", (IN_KIND[t], "-"))
     classify(f"aai16/{NODE}/in/bogus", ("-", "-"))
-    classify(f"aai16/other/in/config", ("-", "-"))                       # someone else's command topic
+    classify("aai16/other/in/config", ("-", "-"))                       # someone else's command topic
     classify(f"aai16/{NODE}/out/reading/3", ("-", "-"))                  # our own telemetry is not an input
     classify("aai16/nodeA/out/reading/2", ("IN_REMOTE_READING", "nodeA"))
     classify("aai16/nodeA/out/reading/", ("-", "-"))

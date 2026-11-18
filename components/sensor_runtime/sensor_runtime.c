@@ -45,7 +45,9 @@ bus_status_t rt_run_ops(const bus_backend_t *be, const aai16_SensorProfile *p, c
             default:
                 return BUS_ERROR;
             }
-            used += rn;
+            if (st == BUS_OK) {
+                used += rn; /* a failed transfer delivered nothing: never report requested bytes as received */
+            }
             break;
         }
         case aai16_OpType_OP_UART_SYNC_READ:
@@ -54,7 +56,9 @@ bus_status_t rt_run_ops(const bus_backend_t *be, const aai16_SensorProfile *p, c
             }
             st = be->uart_sync_read(be->ctx, &p->params.uart, op->tx.bytes, op->tx.size, op->tail.bytes,
                                     op->tail.size, rx + used, op->read_len, to);
-            used += op->read_len;
+            if (st == BUS_OK) {
+                used += op->read_len;
+            }
             break;
         case aai16_OpType_OP_GPIO_SET:
             st = be->gpio_set(be->ctx, op->pin, op->level);
@@ -68,10 +72,12 @@ bus_status_t rt_run_ops(const bus_backend_t *be, const aai16_SensorProfile *p, c
                 return BUS_ERROR;
             }
             st = be->gpio_pulse_width(be->ctx, op->pin, op->level, op->timeout_us, &w);
-            rx[used++] = (uint8_t)(w >> 24);
-            rx[used++] = (uint8_t)(w >> 16);
-            rx[used++] = (uint8_t)(w >> 8);
-            rx[used++] = (uint8_t)w;
+            if (st == BUS_OK) {
+                rx[used++] = (uint8_t)(w >> 24);
+                rx[used++] = (uint8_t)(w >> 16);
+                rx[used++] = (uint8_t)(w >> 8);
+                rx[used++] = (uint8_t)w;
+            }
             break;
         }
         case aai16_OpType_OP_GPIO_BIT_FRAME:
@@ -79,7 +85,9 @@ bus_status_t rt_run_ops(const bus_backend_t *be, const aai16_SensorProfile *p, c
                 return BUS_ERROR;
             }
             st = be->gpio_bit_frame(be->ctx, op->pin, op->read_len, op->timeout_us, op->threshold_us, rx + used);
-            used += op->read_len;
+            if (st == BUS_OK) {
+                used += op->read_len;
+            }
             break;
         default:
             return BUS_ERROR;
@@ -156,7 +164,7 @@ static void run_cycle(sensor_runtime_t *rt, rt_slot_t *s)
 {
     const bus_backend_t *be = &rt->be;
     const aai16_SensorProfile *p = &s->profile;
-    uint8_t raw[CM_MAX_RX_BYTES];
+    uint8_t raw[CM_MAX_RX_BYTES] = {0}; /* never publish uninitialised stack bytes */
     size_t raw_len = 0;
     const uint64_t ts = be->now_us(be->ctx);
 
@@ -168,7 +176,7 @@ static void run_cycle(sensor_runtime_t *rt, rt_slot_t *s)
     s->stats.last_ts_us = ts;
 
     if (!s->init_done) { /* calibration/config ops; retried until they succeed */
-        uint8_t init_raw[CM_INIT_RX_MAX];
+        uint8_t init_raw[CM_INIT_RX_MAX] = {0};
         size_t init_len = 0;
         bus_status_t st = rt_run_ops(be, p, p->init_ops, p->init_ops_count, init_raw, sizeof(init_raw), &init_len);
         if (st == BUS_OK && decode_init(p, init_raw, init_len, &s->dec) != DECODE_OK) {

@@ -94,7 +94,7 @@ def split_indices(ys, groups, rng, window, train_stride, n_classes):
             rng.shuffle(sess)
             n_te = max(1, round(0.15 * len(sess)))
             n_va = max(1, round(0.15 * len(sess)))
-            te_s, va_s, tr_s = set(sess[:n_te]), set(sess[n_te:n_te + n_va]), set(sess[n_te + n_va:])
+            te_s, va_s = set(sess[:n_te]), set(sess[n_te:n_te + n_va])  # every other session is training data
             for i in np.where(ys == c)[0]:
                 (te if groups[i] in te_s else va if groups[i] in va_s else tr).append(i)
         return np.array(tr), np.array(va), np.array(te), "by_session"

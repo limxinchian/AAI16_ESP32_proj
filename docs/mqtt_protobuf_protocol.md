@@ -1,4 +1,4 @@
-# MQTT + Protobuf protocol (draft v1)
+# MQTT + Protobuf protocol (v1)
 
 Source of truth: `protocol/aai16.proto` and `protocol/aai16.options` (regenerate with `tools/generate_proto.py`).
 Every payload is a single binary Protobuf message; no JSON. Strings and repeated fields have fixed maxima.

@@ -5,7 +5,6 @@ Run:  .venv\\Scripts\\python.exe tests\\runtime_host\\run.py
 """
 import importlib.util
 import pathlib
-import struct
 import subprocess
 import sys
 
@@ -55,7 +54,20 @@ def main():
            f"-I{comps / 'config_manager/include'}", f"-I{comps / 'aai16_protocol/generated'}",
            f"-I{comps / 'aai16_protocol/nanopb'}", "-o", str(exe), *map(str, srcs)]
     subprocess.run(cmd, check=True)
-    sys.exit(subprocess.run([str(exe), str(OUT)]).returncode)
+    rc = subprocess.run([str(exe), str(OUT)]).returncode
+
+    # failed transfers must not publish uninitialised / requested-but-missing bytes (tests/runtime_host/test_failed_reads.c)
+    exe2 = OUT / "test_failed_reads.exe"
+    srcs2 = [HERE / "test_failed_reads.c", comps / "sensor_runtime/sensor_runtime.c", comps / "sensor_decode/sensor_decode.c",
+             comps / "aai16_protocol/generated/aai16.pb.c", comps / "aai16_protocol/nanopb/pb_common.c",
+             comps / "aai16_protocol/nanopb/pb_decode.c", comps / "aai16_protocol/nanopb/pb_encode.c"]
+    cmd2 = [sys.executable, "-m", "ziglang", "cc", "-std=c11", "-Wall", "-Wextra", "-g", "-O0",
+            f"-I{comps / 'sensor_runtime/include'}", f"-I{comps / 'sensor_decode/include'}",
+            f"-I{comps / 'config_manager/include'}", f"-I{comps / 'aai16_protocol/generated'}",
+            f"-I{comps / 'aai16_protocol/nanopb'}", "-o", str(exe2), *map(str, srcs2), "-lm"]
+    subprocess.run(cmd2, check=True)
+    rc2 = subprocess.run([str(exe2)]).returncode
+    sys.exit(rc or rc2)
 
 
 if __name__ == "__main__":
