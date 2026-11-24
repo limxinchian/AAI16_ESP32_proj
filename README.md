@@ -68,7 +68,8 @@ without changing its firmware.
 | 12 | Evidence | inference time, health counters, honest limits |
 
 Every message for every scene is ready in **`demo/copypaste/`**, one JSON file per message in demo order
-(`ALL.md` lists them all with their topics), plus the model packages as hex chunks.
+(`ALL.md` lists them all with their topics). `demo/make_copypaste.py` regenerates the pack and also writes the
+model packages as hex chunks for pasting in MQTTX.
 **Step by step: [docs/demo_guide.md](docs/demo_guide.md).**
 
 ---
@@ -147,7 +148,7 @@ AAI16_ESP32_proj/
 |-- protocol/                aai16.proto + aai16.options (the wire contract)
 |-- tools/                   JSON helper, client, sensor profiles, shorthand, recorders, test runner, build script
 |-- demo/                    FlexiCargo demo driver (run.ps1, demo.py, rig.json) and the copy-paste pack
-|-- configs/                 ready-to-send JSON examples (sensors, presets, short form, rules, bridge)
+|-- configs/                 a few ready-to-send JSON examples (short form, a rule, the bridge)
 |-- ml/                      training, int8 export, model packages and contracts (ml/artifacts/)
 |-- data/anomaly/            sensor recordings used to train and test the anomaly model
 |-- tests/                   host test suites (C compiled with zig, Python references)
@@ -294,7 +295,7 @@ Python with independent reference code.
 | `client_mqtt` | laptop client against a real broker and a mock node | 9 groups |
 | `real_data_host` | recording -> CSV -> training -> package path | 1 path |
 | `shorthand_host` | short JSON config form | 37 |
-| `demo_pack_host` | every demo message and config example passes the firmware's own validators; generations, transfer ids, chunks, ML kinds | 134 |
+| `demo_pack_host` | the demo pack is up to date; every demo message and config example passes the firmware's own validators; generations, transfer ids, chunks, ML kinds | 86 |
 
 All 13 suites pass. The build script also checks each firmware image (node id, broker, PSRAM, tick rate, ESP-NN).
 Test cases and the manual board checks: [docs/testing.md](docs/testing.md).
@@ -345,5 +346,4 @@ warn rather than reset. Full evidence table: [docs/project_status.md](docs/proje
 | [docs/sensor_profiles.md](docs/sensor_profiles.md) | the eight sensors as data |
 | [docs/ml_model_contracts.md](docs/ml_model_contracts.md) | model contracts and input matching |
 | [docs/requirements_traceability.md](docs/requirements_traceability.md) | requirements against evidence |
-| [docs/project_status.md](docs/project_status.md) | what has been verified, and how |
-| [docs/demo_and_benchmarks.md](docs/demo_and_benchmarks.md) | measurements and benchmark plan |
+| [docs/project_status.md](docs/project_status.md) | what has been verified, measurements, benchmark plan |

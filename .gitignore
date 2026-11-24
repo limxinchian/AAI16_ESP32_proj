@@ -6,14 +6,10 @@ build_*/
 managed_components/
 tests/*/_gen/
 tools/_gen/
-tools/qemu/
-tests/qemu_nvs_probe/build/
 
 # Local ESP-IDF configuration: holds the Wi-Fi SSID/password entered with `idf.py menuconfig`. NEVER commit.
 sdkconfig
 sdkconfig.old
-tests/qemu_nvs_probe/sdkconfig
-tests/qemu_nvs_probe/sdkconfig.old
 
 # Editor settings with local paths; third-party reference code that must not be redistributed
 .vscode/
@@ -24,6 +20,7 @@ FlexiEdgePico-main/
 data/*
 !data/anomaly/
 
-# Demo tool state (transfer ids of the last upload) and optional recordings
+# Demo tool state (transfer ids of the last upload), optional recordings, model chunks (make_copypaste.py)
 demo/.state.json
 demo/upload_run.csv
+demo/copypaste/chunks/

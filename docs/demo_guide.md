@@ -26,7 +26,8 @@ subscriptions: [mqttx_setup.md](mqttx_setup.md). Wiring: [STEP_BY_STEP_GUIDE.md]
 5. **Put the models on node1**: Motion **active**, Environment **staged**. Either:
    - one command: `.\demo\run.ps1 models` (uploads both, activates Motion). It saves the Environment transfer id in
      `demo\.state.json` (`env_transfer`); use that number in Scene 6 instead of 7002; or
-   - paste the hex chunks in MQTTX (`demo/copypaste/chunks/`, topic `aai16/node1/in/model/chunk`, format **Hex**):
+   - paste the hex chunks in MQTTX (create them first with `.\.venv\Scripts\python.exe demo\make_copypaste.py`; they are
+     written to `demo/copypaste/chunks/`), topic `aai16/node1/in/model/chunk`, format **Hex**:
      Motion chunks 1..4, then `08_s04_..._motion_activate_only_if_chunks_pasted.json`, then Environment chunks 1..4.
    **Do not reboot node1 after staging Environment**: only the active model survives a reboot.
 
@@ -167,7 +168,8 @@ The sensor needs about 3 minutes to warm up. `READ_TIMEOUT` means wiring (TX/RX 
    ```powershell
    .\.venv\Scripts\python.exe tools\node_client.py --broker 127.0.0.1 --node node1 upload ml\artifacts\anomaly_real\anomaly.amdl --kind anomaly --transfer 7003 --chunk 1024
    ```
-   or paste `chunks/anomaly_chunk_1_of_8.hex` ... `8_of_8.hex` (format **Hex**) to `aai16/node1/in/model/chunk`.
+   or paste `demo/copypaste/chunks/anomaly_chunk_1_of_8.hex` ... `8_of_8.hex` (created by `demo\make_copypaste.py`;
+   format **Hex**) to `aai16/node1/in/model/chunk`.
 2. **Activate:** `22_s11_node1_model-control_anomaly_activate.json` (`transfer_id` 7003, the `--transfer` value).
 3. **Inputs:** `23_s11_node1_model-control_anomaly_inputs.json` (HC-SR04 distance and MAX6675 equipment temperature).
 4. **Optional refusal:** `24_..._anomaly_badmap_distance_as_temperature.json` gives `VALUE_KIND_MISMATCH`.

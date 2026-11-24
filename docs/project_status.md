@@ -34,10 +34,9 @@ threshold comes from about 12 minutes of recording; long-run (hours) stability; 
 |---|---|
 | Host tests (13 suites, about 6,500 checks, plus the laptop client self-test; see docs/testing.md) | `.venv\Scripts\python.exe tools\run_all_tests.py` |
 | Target build | `. .\tools\idf_env.ps1 ; idf.py set-target esp32s3 ; idf.py build` (ESP-IDF 6.1 from `C:\esp\v6.1`, tools from `C:\Espressif`; the script sets session variables only) |
-| Run the real image in QEMU | merge image + `.venv\Scripts\python.exe tools\qemu_session.py` (steps in its docstring; QEMU unpacked to `tools/qemu` from `C:\Espressif\dist`) |
 | Retrain the two models | `.venv\Scripts\python.exe ml\train_motion.py` and `ml\train_environment.py` |
 | Laptop client (config, rules, bridge, commands, model upload/activate, input mapping, listen) | `python tools\node_client.py --broker <ip> --node node1 <command>`; offline check: `... node_client.py selftest` (tested against a local broker + mock node in `tests/client_mqtt`: retries after a lost ACK, out-of-order recovery, exact bytes; not yet against the real firmware over Wi-Fi) |
-| Documentation | `docs/requirements_traceability.md` (AC-01..AC-17 status), `architecture.md`, `mqtt_protobuf_protocol.md`, `sensor_profiles.md`, `ml_model_contracts.md`, `demo_and_benchmarks.md` |
+| Documentation | `docs/requirements_traceability.md` (AC-01..AC-17 status), `architecture.md`, `mqtt_protobuf_protocol.md`, `sensor_profiles.md`, `ml_model_contracts.md`, `testing.md` |
 | Reference (non-accelerated) build for AC-16 | `idf.py -B build_ref "-DSDKCONFIG=build_ref/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.ref.defaults" build` - builds, 385,712 B vs 393,856 B with ESP-NN; timing/accuracy comparison needs a board |
 | Step-by-step hardware guide (setup, MQTT broker, wiring, bring-up, demo, data collection, troubleshooting) | `docs/STEP_BY_STEP_GUIDE.md` (commands that can run without a board were executed; wiring/Mosquitto steps are unverified) |
 | Record real sensor data and retrain | `tools/collect_readings.py` -> CSV -> `ml/train_motion.py --data DIR --out DIR --version N` (tested with simulated recordings: format, gap/rate rejection, by-session split; no real data yet) |
@@ -58,7 +57,7 @@ threshold comes from about 12 minutes of recording; long-run (hours) stability; 
 | Node core (wiring, fan-out, model flow, recovery incl. rules / bridge / ML mapping / model generation) | `components/node_core/` | 487 checks; **8 inferences matched recorded int8 tensors of the real trained models** (only the matrix multiply is a double) | yes | boots, commands work | - |
 | ESP-IDF platform layer: I2C/UART/SPI/GPIO drivers, NVS + flash banks, rule outputs, Wi-Fi + MQTT, TFLM wrapper | `components/platform_esp/`, `main/` | n/a (hardware code) | **yes (393,728 B image; clean rebuild from scratch, no warnings from project code)** | boots; NVS write verified | **no** |
 
-QEMU session (`tools/qemu_session.py`, 17 checks): boot, 8 MB PSRAM, NVS ready, HELP/SHOW, forbidden-pin config
+QEMU session (17 checks, run during development with a local QEMU build; the emulator driver is no longer kept in the repository): boot, 8 MB PSRAM, NVS ready, HELP/SHOW, forbidden-pin config
 refused, good config accepted and written to NVS (329 bytes), STOP/RUN, bad input rejected, scheduler stays
 responsive and does not panic, CLEAR, REBOOT command restarts the firmware.
 
@@ -75,8 +74,8 @@ Hardware evidence in this project is **live session output** from two boards; ap
 it was not saved as log files. Treat it as reported, not archived, until logs are added.
 
 - **Reboot persistence.** Observed on a real board (node1 restored its configuration, dormant profiles, rules, bridge settings and
-  model after a reboot). **QEMU still does not keep flash across a restart** (`tests/qemu_nvs_probe` reads `boots=0`), so this
-  cannot be shown in the emulator.
+  model after a reboot). **QEMU did not keep flash across a restart** (a probe read `boots=0`), so this
+  could not be shown in the emulator.
 - **Sensors.** Seven of the eight sensor profiles were observed working on boards (GY-511, DHT22, BME280, MAX6675, MH-Z19B, LD2450,
   RC522, the last after adding the receiver-gain write for its clone chip). **The HC-SR04 is team-reported only.** A line-by-line
   datasheet check of every register, scale and polarity has not been done. The DHT22 (polling bit capture with interrupts off for
@@ -93,6 +92,33 @@ it was not saved as log files. Treat it as reported, not archived, until logs ar
   partly on about 12 minutes of real recordings (temperature, humidity, pressure, equipment temperature only). No field accuracy claim.
 - Persistence of rules, bridge settings, ML input mapping and the model generation counter is host-tested (including a damaged-state
   case) and its reboot restore was observed on node1.
+
+## Measurements and benchmark plan
+
+No number below is invented: the only figures are ones measured in this project.
+
+| Item | Value | How |
+|---|---|---|
+| Firmware image | 401,040 B (node1 and node2, ESP-IDF 6.1, esp32s3, ESP-NN enabled) | `build_and_flash.ps1` / `tools\build_all.ps1` |
+| Reference image (ESP-NN off) | builds; 385,712 B vs 393,856 B with ESP-NN on an earlier version | `tools\build_all.ps1 -Reference` (`sdkconfig.ref.defaults`) |
+| Static internal RAM (DIRAM) | about 82 KB of 341 KB (earlier version) | `idf.py size` |
+| Model packages | Motion 3,743 B, Environment 3,433 B, Anomaly 7,593 B (int8 TFLite inside) | `ml/artifacts/*/` |
+| Inference time on the board | about 340 us (Motion), 360 us (Environment) | `inference_us` in `InferenceResult` |
+| Sampling accuracy | 12-minute recording, 11,891 readings, no skipped interval, worst lateness 10.8 ms | `tools\record_slot_data.py`, `tools\analyze_sampling_timing.py` |
+| Host verification | 13 suites, about 6,500 checks | `tools\run_all_tests.py` ([testing.md](testing.md)) |
+
+Still to measure (record raw data to CSV and keep the script that produced it):
+
+| Metric | Method |
+|---|---|
+| Inference latency distribution | median / p95 of `inference_us` over 1000+ runs |
+| ESP-NN off versus on | the reference image; compare outputs (tolerance) and timing |
+| TFLM arena actually used | log line at model load |
+| Model swap time | client: upload start to `ModelStatus ACTIVE` |
+| Chunk size 256 / 512 / 1024 | upload time and retries per size |
+| MQTT round trip | publish `command`, time to the observed effect or ACK |
+| Free heap over a long run | `Heartbeat.free_heap` over hours |
+| Wi-Fi loss and reboot | disconnect during an upload; power-cycle; check the restore |
 
 ## Findings that need a decision
 

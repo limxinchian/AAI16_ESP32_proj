@@ -8,7 +8,9 @@ Checks, without any board:
   4. every model chunk file decodes, the chunks reassemble to the package byte for byte, and the SHA-256 matches;
   5. every SET_INPUTS mapping that should be accepted gives each model channel a sensor value of the kind the model
      contract demands, and every deliberately bad mapping really breaks that rule (so the node must refuse it).
-  6. every ready-to-send example in configs/ converts and passes the same firmware validators.
+  6. every ready-to-send example in configs/ converts and passes the same firmware validators;
+  7. the committed pack is up to date: regenerating it with demo/make_copypaste.py gives the same files.
+The model chunks are not stored in git; they are regenerated here (into _gen/pack/chunks) and checked.
 
 Run:  .venv\\Scripts\\python.exe tests\\demo_pack_host\\run.py
 """
@@ -58,6 +60,18 @@ def main():
 
     files = sorted(PACK.glob("*.json"))
     check("copy-paste pack exists", len(files) > 0, f"({len(files)} messages)")
+
+    print("0) the committed pack matches a fresh regeneration")
+    sys.path.insert(0, str(ROOT / "demo"))
+    import make_copypaste  # noqa: E402  (imports demo/demo.py and demo/rig.json)
+    fresh = OUT / "pack"
+    make_copypaste.main(fresh)
+    norm = lambda p: p.read_bytes().replace(b"\r\n", b"\n")  # noqa: E731 - Windows checkouts may use CRLF
+    committed = sorted(p.name for p in PACK.glob("*.json")) + ["ALL.md"]
+    generated = sorted(p.name for p in fresh.glob("*.json")) + ["ALL.md"]
+    check("same message files", committed == generated)
+    stale = [n for n in generated if (PACK / n).exists() and norm(PACK / n) != norm(fresh / n)]
+    check("every committed message is identical to the regenerated one", not stale, str(stale) if stale else "")
 
     # sensor id -> output kinds of the profile the pack configures (for the ML mapping checks)
     kinds_of = {}
@@ -129,7 +143,7 @@ def main():
     gens = [(n, d["generation"]) for n, d, _ in controls if d["action"] != "ACTION_QUERY"]
     rising = all(b >= a for (_, a), (_, b) in zip(gens, gens[1:]))
     check("model-control generations never go down in demo order", rising, str([g for _, g in gens]))
-    chunk_dir = PACK / "chunks"
+    chunk_dir = fresh / "chunks"  # regenerated above; chunks are not stored in git
     transfers = {}
     for cf in chunk_dir.glob("*.hex"):
         m = pb.ModelChunk.FromString(bytes.fromhex(cf.read_text(encoding="utf-8").strip()))

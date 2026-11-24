@@ -36,11 +36,8 @@ Result of the last full run (commit of this README): **all 13 suites pass**, abo
 | `client_mqtt` | the laptop client (`tools/node_client.py`) against a real MQTT broker and a scripted mock node | 9 groups | Config, rules, bridge, commands, model upload with a lost ACK and out-of-order recovery, exact bytes on the wire |
 | `real_data_host` | the real-data path | 1 path | `collect_readings.py` CSV, through `ml/real_data.py`, to `ml/train_*.py --data` and a valid model package |
 | `shorthand_host` | the short JSON config form (`tools/config_shorthand.py`) | 37 | Every bare sensor name expands to exactly the built-in profile; overrides (period, address, pins, UART settings); dormant and disable forms; unknown sensors, settings and presets are refused |
-| `demo_pack_host` | the FlexiCargo copy-paste pack and the `configs/` examples | 134 (48 of them by the firmware validators) | Every pack message converts to Protobuf exactly as the JSON helper does; every config, rule set and bridge (pack and `configs/`) passes the firmware's own validators; model generations rise in demo order; every ACTIVATE uses the transfer id of its chunk files; chunks reassemble to the package with a matching SHA-256; every accepted ML mapping matches the model contract's value kinds and every deliberately bad mapping breaks them |
+| `demo_pack_host` | the FlexiCargo copy-paste pack and the `configs/` examples | 86 (23 of them by the firmware validators) | The committed pack is identical to a fresh regeneration; every pack message converts to Protobuf exactly as the JSON helper does; every config, rule set and bridge (pack and `configs/`) passes the firmware's own validators; model generations rise in demo order; every ACTIVATE uses the transfer id of its chunk files; chunks reassemble to the package with a matching SHA-256; every accepted ML mapping matches the model contract's value kinds and every deliberately bad mapping breaks them |
 | `node_client selftest` | offline checks of the client | 9 | Chunking at 256 / 512 / 1024 bytes reassembles with a matching SHA-256; chunks above 1024 bytes are refused; SET_INPUTS and command encoding |
-
-`tests/qemu_nvs_probe` is a separate, optional ESP-IDF project for running the real image in the QEMU emulator; it
-needs a local QEMU build (not part of the repository) and is not in the automatic run.
 
 ## Firmware build checks
 

@@ -52,7 +52,6 @@ idf.py --version            # expect: ESP-IDF v6.1
 - [ ] All suites print `0 failures` / `ALL HOST SUITES PASS`.
 - [ ] `idf.py --version` prints `ESP-IDF v6.1`.
 
-Optional: `.venv\Scripts\python.exe tools\qemu_session.py` boots the firmware in an emulator (needs `build\qemu_flash.bin`, see README).
 
 ---
 
@@ -555,7 +554,7 @@ Same as Phase 7.2/7.3 but with the new files and higher numbers:
 
 ## 10. Phase 9 - measurements and evidence to keep
 
-These fill the open rows of `docs/requirements_traceability.md` and the empty benchmark table in `docs/demo_and_benchmarks.md`.
+These fill the open rows of `docs/requirements_traceability.md` and the benchmark plan in `docs/project_status.md`.
 Keep the raw output (copy from the monitor / `listen`) and note the date and settings.
 
 | What | How |
@@ -682,7 +681,7 @@ LD2450 `[x, y, speed]` - MH-Z19 `[ppm]` - RC522 `[card_present, atqa]` - MAX6675
 upload chunk 256-1024 bytes (default 512)
 
 **Files to look at:** `docs/project_status.md` (what is verified), `docs/requirements_traceability.md` (the acceptance table to fill in),
-`docs/sensor_profiles.md`, `docs/ml_model_contracts.md`, `docs/mqtt_protobuf_protocol.md`, `docs/demo_and_benchmarks.md`.
+`docs/sensor_profiles.md`, `docs/ml_model_contracts.md`, `docs/mqtt_protobuf_protocol.md`, `docs/testing.md`.
 
 ---
 
