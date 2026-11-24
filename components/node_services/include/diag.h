@@ -1,5 +1,5 @@
 #pragma once
-/* Heartbeat construction (handoff 6.4). Pure: the caller supplies the numbers. */
+/* Heartbeat construction. Pure: the caller supplies the numbers. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

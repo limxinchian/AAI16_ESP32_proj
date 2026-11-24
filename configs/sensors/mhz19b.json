@@ -5,9 +5,9 @@
    "sensor": "mhz19b",
    "enabled": true,
    "uart": {
-    "port": 1,
-    "tx": 17,
-    "rx": 18,
+    "port": 2,
+    "tx": 15,
+    "rx": 16,
     "baud": 9600
    },
    "period_ms": 2000,

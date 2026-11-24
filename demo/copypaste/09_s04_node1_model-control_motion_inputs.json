@@ -1,0 +1,22 @@
+{
+ "generation": 2000001,
+ "action": "ACTION_SET_INPUTS",
+ "kind": "MODEL_MOTION",
+ "inputs": [
+  {
+   "sensor_id": 1,
+   "value_index": 0,
+   "feature_slot": 0
+  },
+  {
+   "sensor_id": 1,
+   "value_index": 1,
+   "feature_slot": 1
+  },
+  {
+   "sensor_id": 1,
+   "value_index": 2,
+   "feature_slot": 2
+  }
+ ]
+}

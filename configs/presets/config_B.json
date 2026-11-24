@@ -5,7 +5,7 @@
    "sensor": "hcsr04",
    "enabled": true,
    "gpio": {
-    "data_pin": 6,
+    "data_pin": 4,
     "aux_pin": 5
    },
    "period_ms": 100,
@@ -13,7 +13,7 @@
     {
      "type": 6,
      "delay_us": 10,
-     "pin": 6,
+     "pin": 4,
      "level": true
     },
     {
@@ -937,9 +937,9 @@
    "sensor": "mhz19b",
    "enabled": true,
    "uart": {
-    "port": 1,
-    "tx": 17,
-    "rx": 18,
+    "port": 2,
+    "tx": 15,
+    "rx": 16,
     "baud": 9600
    },
    "period_ms": 2000,

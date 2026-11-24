@@ -1,4 +1,4 @@
-"""The eight proposed sensors as configuration data (handoff section 2).
+"""The eight proposed sensors as configuration data.
 
 STATUS: authored from datasheet/protocol knowledge, then exercised on real ESP32-S3 boards (GY-511, DHT22, BME280,
 MAX6675, MH-Z19B, LD2450, RC522 observed working; the HC-SR04 profile is team-reported only). Hardware findings are

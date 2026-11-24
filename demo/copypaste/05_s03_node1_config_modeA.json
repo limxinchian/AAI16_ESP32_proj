@@ -1,0 +1,16 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sda": 8,
+   "scl": 9,
+   "sensor": "gy511",
+   "period_ms": 20
+  },
+  {
+   "pin": 6,
+   "sensor": "dht22",
+   "period_ms": 2000
+  }
+ ]
+}

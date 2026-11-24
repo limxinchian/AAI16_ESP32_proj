@@ -23,3 +23,7 @@ FlexiEdgePico-main/
 # Sensor recordings: only the small anomaly-model recordings are kept
 data/*
 !data/anomaly/
+
+# Demo tool state (transfer ids of the last upload) and optional recordings
+demo/.state.json
+demo/upload_run.csv

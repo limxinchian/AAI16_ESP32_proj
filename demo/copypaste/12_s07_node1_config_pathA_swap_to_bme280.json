@@ -1,0 +1,11 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "sda": 8,
+   "scl": 9,
+   "sensor": "bme280",
+   "period_ms": 2000
+  }
+ ]
+}

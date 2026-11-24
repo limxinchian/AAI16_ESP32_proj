@@ -1,0 +1,210 @@
+{
+ "generation": "auto",
+ "rules": [
+  {
+   "rule_id": 1,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 1,
+     "value_index": 0,
+     "stat": "STAT_LATEST",
+     "window": 1
+    },
+    {
+     "sensor_id": 1,
+     "value_index": 1,
+     "stat": "STAT_LATEST",
+     "window": 1
+    },
+    {
+     "sensor_id": 1,
+     "value_index": 2,
+     "stat": "STAT_LATEST",
+     "window": 1
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_MUL"
+    },
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 1
+    },
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 1
+    },
+    {
+     "op": "CALC_MUL"
+    },
+    {
+     "op": "CALC_ADD"
+    },
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 2
+    },
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 2
+    },
+    {
+     "op": "CALC_MUL"
+    },
+    {
+     "op": "CALC_ADD"
+    },
+    {
+     "op": "CALC_SQRT"
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 1.5
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "PACKAGE_HANDLING_ADVISORY"
+   },
+   "cooldown_ms": 5000,
+   "edge_triggered": false
+  },
+  {
+   "rule_id": 2,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 2,
+     "value_index": 1,
+     "stat": "STAT_MIN",
+     "window": 3
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 32.0
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "TEMPERATURE_ADVISORY"
+   },
+   "cooldown_ms": 30000,
+   "edge_triggered": false
+  },
+  {
+   "rule_id": 3,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 2,
+     "value_index": 0,
+     "stat": "STAT_MIN",
+     "window": 3
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 70.0
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "HUMIDITY_ADVISORY"
+   },
+   "cooldown_ms": 30000,
+   "edge_triggered": false
+  },
+  {
+   "rule_id": 4,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 131,
+     "value_index": 0,
+     "stat": "STAT_LATEST",
+     "window": 1
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 0.5
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "REMOTE_CHECK_IN_SEEN"
+   },
+   "cooldown_ms": 5000,
+   "edge_triggered": true
+  },
+  {
+   "rule_id": 5,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 130,
+     "value_index": 1,
+     "stat": "STAT_LATEST",
+     "window": 1
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 0.0
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "REMOTE_RADAR_TARGET"
+   },
+   "cooldown_ms": 5000,
+   "edge_triggered": false
+  }
+ ]
+}

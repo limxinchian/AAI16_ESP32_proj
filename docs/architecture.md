@@ -33,7 +33,7 @@ Layers (each is plain C with a hardware interface, host-tested; `platform_esp` i
 | `platform_esp` | drivers, NVS + flash banks, Wi-Fi/MQTT, GPIO/PWM outputs, TFLite Micro wrapper |
 | `main` | `app_main`: NVS init, PSRAM allocation of the node, node task, console task |
 
-## Flows (handoff §7) and where they live
+## Flows and where they live
 
 | Flow | Path |
 |---|---|

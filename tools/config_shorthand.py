@@ -40,8 +40,9 @@ pb = load_pb()
 ALIASES = {"gy511": "gy511", "dht22": "dht22", "am2302": "dht22", "ld2450": "ld2450", "rc522": "rc522",
            "bme280": "bme280", "hcsr04": "hcsr04", "mhz19": "mhz19b", "mhz19b": "mhz19b", "max6675": "max6675"}
 PRESETS = {"A": ["dht22", "gy511", "ld2450", "rc522"], "B": ["hcsr04", "bme280", "mhz19b", "max6675"]}
-# Pins as they are WIRED on this project's board (differs from the profile defaults for two sensors). Edit here once.
-WIRING = {"hcsr04": {"trig": 6, "echo": 5}, "mhz19b": {"port": 1, "tx": 17, "rx": 18}}
+# Per-sensor pin overrides for this board. Empty: the built-in profiles in sensor_profiles.py already use the
+# project wiring (README.md, Hardware). Add an entry here only if a board is wired differently.
+WIRING = {}
 ALLOWED = {
     "gy511": {"addr", "sda", "scl", "clock_hz"}, "bme280": {"addr", "sda", "scl", "clock_hz"},
     "dht22": {"pin"}, "hcsr04": {"trig", "echo"},

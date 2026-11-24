@@ -1,0 +1,67 @@
+{
+ "generation": "auto",
+ "rules": [
+  {
+   "rule_id": 1,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 6,
+     "value_index": 0,
+     "stat": "STAT_MAX",
+     "window": 3
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 15.0
+    },
+    {
+     "op": "CALC_LT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "LOADING_LANE_OBSTRUCTION"
+   },
+   "cooldown_ms": 5000,
+   "edge_triggered": false
+  },
+  {
+   "rule_id": 2,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 8,
+     "value_index": 0,
+     "stat": "STAT_MEAN",
+     "window": 4
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 40.0
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "EQUIPMENT_TEMPERATURE_ADVISORY"
+   },
+   "cooldown_ms": 10000,
+   "edge_triggered": false
+  }
+ ]
+}

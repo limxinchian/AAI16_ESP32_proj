@@ -1,0 +1,38 @@
+{
+ "generation": "auto",
+ "profiles": [
+  {
+   "sensor_id": 4,
+   "bus": "BUS_SPI",
+   "enabled": true,
+   "period_ms": 1000,
+   "spi": {
+    "sclk": 12,
+    "mosi": 11,
+    "miso": 13,
+    "cs": 14,
+    "clock_hz": 1000000,
+    "mode": 0
+   },
+   "ops": [
+    {
+     "type": "OP_WRITE_READ",
+     "tx": "7gA=",
+     "read_len": 2
+    }
+   ],
+   "decode": [
+    {
+     "dest_reg": 0,
+     "src_offset": 1,
+     "width": 1,
+     "scale": 1.0
+    }
+   ],
+   "output_count": 1,
+   "output_kinds": [
+    "VALUE_OTHER"
+   ]
+  }
+ ]
+}

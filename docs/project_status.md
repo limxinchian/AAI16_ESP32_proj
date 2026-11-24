@@ -1,6 +1,6 @@
-# STATUS
+# Project status and evidence
 
-Scope source: `ESP32-S3_Codex_Implementation_Handoff.md`. Evidence levels (handoff §9):
+Evidence levels used below:
 **Implemented / Host-tested / Target-built / Emulated / Board-tested / Blocked**.
 
 **Bottom line (2026-11-13):** the complete firmware builds for the ESP32-S3, runs in QEMU and **now runs on two real
@@ -32,12 +32,12 @@ threshold comes from about 12 minutes of recording; long-run (hours) stability; 
 
 | What | Command (repo root, PowerShell) |
 |---|---|
-| Host tests (12 suites, about 6,300 checks, plus the laptop client self-test) | `.venv\Scripts\python.exe tools\run_all_tests.py` |
+| Host tests (13 suites, about 6,500 checks, plus the laptop client self-test; see docs/testing.md) | `.venv\Scripts\python.exe tools\run_all_tests.py` |
 | Target build | `. .\tools\idf_env.ps1 ; idf.py set-target esp32s3 ; idf.py build` (ESP-IDF 6.1 from `C:\esp\v6.1`, tools from `C:\Espressif`; the script sets session variables only) |
 | Run the real image in QEMU | merge image + `.venv\Scripts\python.exe tools\qemu_session.py` (steps in its docstring; QEMU unpacked to `tools/qemu` from `C:\Espressif\dist`) |
 | Retrain the two models | `.venv\Scripts\python.exe ml\train_motion.py` and `ml\train_environment.py` |
 | Laptop client (config, rules, bridge, commands, model upload/activate, input mapping, listen) | `python tools\node_client.py --broker <ip> --node node1 <command>`; offline check: `... node_client.py selftest` (tested against a local broker + mock node in `tests/client_mqtt`: retries after a lost ACK, out-of-order recovery, exact bytes; not yet against the real firmware over Wi-Fi) |
-| Documentation (handoff §11) | `docs/requirements_traceability.md` (AC-01..AC-17 status), `architecture.md`, `mqtt_protobuf_protocol.md`, `sensor_profiles.md`, `ml_model_contracts.md`, `demo_and_benchmarks.md` |
+| Documentation | `docs/requirements_traceability.md` (AC-01..AC-17 status), `architecture.md`, `mqtt_protobuf_protocol.md`, `sensor_profiles.md`, `ml_model_contracts.md`, `demo_and_benchmarks.md` |
 | Reference (non-accelerated) build for AC-16 | `idf.py -B build_ref "-DSDKCONFIG=build_ref/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.ref.defaults" build` - builds, 385,712 B vs 393,856 B with ESP-NN; timing/accuracy comparison needs a board |
 | Step-by-step hardware guide (setup, MQTT broker, wiring, bring-up, demo, data collection, troubleshooting) | `docs/STEP_BY_STEP_GUIDE.md` (commands that can run without a board were executed; wiring/Mosquitto steps are unverified) |
 | Record real sensor data and retrain | `tools/collect_readings.py` -> CSV -> `ml/train_motion.py --data DIR --out DIR --version N` (tested with simulated recordings: format, gap/rate rejection, by-session split; no real data yet) |
@@ -106,7 +106,7 @@ it was not saved as log files. Treat it as reported, not archived, until logs ar
    period (motion 20 ms ±25 %, environment 2000 ms ±30 %).
 6. **Serial bus servicing:** buses run one after another in one task; a blocking op (DHT22 ~6 ms) delays others' timestamps.
 7. **DHT22 bit timing** uses polling with interrupts disabled (~5 ms). RMT capture would be more robust; decide after board tests.
-8. Handoff §10 supervisor questions (legacy parity, acceleration scope, protocol scope, grading) remain open.
+8. Open supervisor questions (legacy parity, acceleration scope, protocol scope, grading) remain open.
 
 ## Next steps
 
@@ -114,4 +114,4 @@ it was not saved as log files. Treat it as reported, not archived, until logs ar
    profiles), Wi-Fi/MQTT with a broker, model upload and on-chip inference; record latency/arena/heap numbers.
 2. Collect labelled GY-511 / DHT22 / BME280 windows and retrain; re-export; verify golden outputs on the board.
 3. Persist rules, bridge and model generation; benchmark accelerated vs reference inference (ESP-NN build flag).
-4. Write the `docs/` items from handoff §11 (traceability, protocol, demo/benchmarks) from real measurements.
+4. Update the `docs/` items (traceability, protocol, demo/benchmarks) with archived measurements.

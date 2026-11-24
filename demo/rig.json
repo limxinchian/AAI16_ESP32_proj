@@ -1,0 +1,28 @@
+{
+  "_comment": "Edit this file if the rig differs. broker = where the LAPTOP reaches Mosquitto (127.0.0.1 = this laptop; the nodes use the address built into their firmware).",
+  "broker": "127.0.0.1",
+  "port": 1883,
+  "ml_node": "node1",
+  "station_node": "node2",
+  "wiring": {
+    "gy511":   {"sda": 8, "scl": 9},
+    "bme280":  {"sda": 8, "scl": 9},
+    "dht22":   {"pin": 6},
+    "hcsr04":  {"trig": 4, "echo": 5},
+    "max6675": {"cs": 10, "sclk": 12, "mosi": 11, "miso": 13},
+    "rc522":   {"cs": 14, "sclk": 12, "mosi": 11, "miso": 13},
+    "ld2450":  {"port": 1, "tx": 17, "rx": 18},
+    "mhz19b":  {"port": 2, "tx": 15, "rx": 16}
+  },
+  "thresholds": {
+    "_comment": "Illustrative demo policies (not safety limits). Lower them to force a rule to fire during a rehearsal.",
+    "accel_g": 1.5,
+    "temperature_c": 32,
+    "humidity_pct": 70,
+    "zone_half_width_mm": 500,
+    "zone_depth_mm": 1500,
+    "obstruction_cm": 15,
+    "equipment_c": 40,
+    "co2_ppm": 1200
+  }
+}

@@ -4,7 +4,7 @@ All Python tools run with the project venv: `.venv\Scripts\python.exe tools\<nam
 
 | Tool | Purpose |
 |---|---|
-| `build_all.ps1` | one command: check tools, run the host tests, build (and optionally flash) each node, `-Reference` for the non-accelerated image |
+| `build_all.ps1` | check tools, run the host tests, build (and optionally flash) each node, `-Reference` for the non-accelerated image (`build_and_flash.ps1` in the repo root is the simple front end) |
 | `run_all_tests.py` | every host test suite plus the client self-test |
 | `node_client.py` | send config, rules, bridge, commands; upload/activate models and set ML inputs; `listen` |
 | `json_bridge_all.py`, `json_bridge.py`, `json_monitor.py` | JSON mirror of the node's Protobuf topics for MQTTX (`aai16/<node>/json/#`, `json_in/<topic>`) |
@@ -15,4 +15,4 @@ All Python tools run with the project venv: `.venv\Scripts\python.exe tools\<nam
 | `analyze_sampling_timing.py` | sampling accuracy from a recording: invalid readings, skipped intervals, lateness, deadline violations |
 | `generate_proto.py` | regenerate the nanopb C code and the Python module from `protocol/aai16.proto` |
 | `idf_env.ps1`, `qemu_session.py` | ESP-IDF shell helper; QEMU session driver |
-| `mqttx/` | optional MQTTX "Run Script" viewers (the JSON helper is usually easier) |
+| `mqttx/` | optional MQTTX "Run Script" viewer (the JSON helper is usually easier; see `docs/mqttx_setup.md`) |

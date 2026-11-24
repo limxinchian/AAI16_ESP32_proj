@@ -1,6 +1,6 @@
 """Host test: the short config form expands to exactly the full profiles (no board needed).
 
-Run:  .venv\Scripts\python.exe tests\shorthand_host\run.py
+Run:  .venv\\Scripts\\python.exe tests\\shorthand_host\\run.py
 """
 import pathlib
 import sys
@@ -29,22 +29,9 @@ def one(item):
     return full({"sensors": [item]}).profiles[0]
 
 
-# 1) a bare sensor name gives the built-in profile (with this board's wiring for hcsr04 / mhz19b)
-def ref_hcsr04(_pb):
-    p = sp.hcsr04(pb); p.gpio.data_pin = 6
-    for o in p.ops:
-        if o.type == pb.OP_GPIO_PULSE:
-            o.pin = 6
-    return p
-
-
-def ref_mhz19b(_pb):
-    p = sp.mhz19(pb); p.uart.port, p.uart.tx, p.uart.rx = 1, 17, 18
-    return p
-
-
+# 1) a bare sensor name gives exactly the built-in profile (which already uses this project's wiring)
 REF = {"gy511": sp.gy511, "dht22": sp.dht22, "ld2450": sp.ld2450, "rc522": sp.rc522, "bme280": sp.bme280,
-       "hcsr04": ref_hcsr04, "mhz19b": ref_mhz19b, "max6675": sp.max6675}
+       "hcsr04": sp.hcsr04, "mhz19b": sp.mhz19, "max6675": sp.max6675}
 for name, make in REF.items():
     want = make(pb).SerializeToString()
     check(f"{name}: bare name == built-in profile", one(name).SerializeToString() == want)

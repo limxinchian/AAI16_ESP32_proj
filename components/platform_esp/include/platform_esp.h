@@ -1,6 +1,6 @@
 #pragma once
-/* ESP-IDF implementation of node_platform_t. NOT hardware-verified: see STATUS.md for what has been
- * compiled vs. run on a board. */
+/* ESP-IDF implementation of node_platform_t (buses, GPIO outputs, flash storage, Wi-Fi/MQTT, TFLM).
+ * Built for the ESP32-S3 and run on two boards; see docs/project_status.md for what has been verified and how. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

@@ -1,5 +1,5 @@
 #pragma once
-/* Serial REPL command layer (handoff 6.2). Human-readable commands; configuration travels as
+/* Serial REPL command layer. Human-readable commands; configuration travels as
  * hex-encoded Protobuf and is handed to the SAME handlers the MQTT path uses, so there is one
  * validation/apply code path and no duplicated business logic.
  *

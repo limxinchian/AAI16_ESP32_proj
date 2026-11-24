@@ -1,0 +1,12 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "port": 2,
+   "tx": 15,
+   "rx": 16,
+   "sensor": "mhz19b",
+   "period_ms": 2000
+  }
+ ]
+}

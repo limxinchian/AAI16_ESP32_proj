@@ -1,0 +1,13 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "cs": 10,
+   "sclk": 12,
+   "mosi": 11,
+   "miso": 13,
+   "sensor": "max6675",
+   "period_ms": 2000
+  }
+ ]
+}

@@ -1,5 +1,5 @@
 #pragma once
-/* Rule Engine: bounded, Protobuf-configured rules over sensor values (handoff 6.1).
+/* Rule Engine: bounded, Protobuf-configured rules over sensor values.
  *
  * Each rule has up to 6 variables (a statistic over a sliding window of one sensor value), an RPN
  * `when` expression over them and ONE action. Safety properties enforced by construction/validation:

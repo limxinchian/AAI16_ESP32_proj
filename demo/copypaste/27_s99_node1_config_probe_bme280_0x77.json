@@ -1,0 +1,35 @@
+{
+ "generation": "auto",
+ "profiles": [
+  {
+   "sensor_id": 5,
+   "bus": "BUS_I2C",
+   "enabled": true,
+   "period_ms": 1000,
+   "i2c": {
+    "sda": 8,
+    "scl": 9,
+    "addr": 119,
+    "clock_hz": 100000
+   },
+   "ops": [
+    {
+     "type": "OP_WRITE_READ",
+     "tx": "0A==",
+     "read_len": 1
+    }
+   ],
+   "decode": [
+    {
+     "dest_reg": 0,
+     "width": 1,
+     "scale": 1.0
+    }
+   ],
+   "output_count": 1,
+   "output_kinds": [
+    "VALUE_OTHER"
+   ]
+  }
+ ]
+}

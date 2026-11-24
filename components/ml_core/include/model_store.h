@@ -1,5 +1,5 @@
 #pragma once
-/* Model transfer + staging + activation (handoff 4.3, flows D). Two flash banks: the ACTIVE model is
+/* Model transfer + staging + activation. Two flash banks: the ACTIVE model is
  * never written; an upload always goes to the other bank, is verified (size, SHA-256, package
  * contract) and only then becomes STAGED. Activation flips the persisted active-bank pointer after the
  * caller's runtime check passes. A reboot discards partial/staged data and restores the last committed

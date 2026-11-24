@@ -1,4 +1,4 @@
-# Requirements traceability (handoff section 9 acceptance matrix)
+# Requirements traceability (acceptance matrix)
 
 Evidence levels: **H** host-tested (PC, simulated devices) - **T** target-built (ESP-IDF 6.1, esp32s3) - **Q** ran in QEMU -
 **B** board-tested on two ESP32-S3 boards. Status as of 2026-11-18.
@@ -29,21 +29,21 @@ record; *no* = never tried on hardware. Host tests are not hardware evidence, an
 | extra | Dormant sensors started/stopped by rules | `config_manager`, `rule_engine`, `node_core` | yes (`tests/dormant_host`, 1058 checks) | yes | observed: a card tap starts stored sensors on both nodes; they run until stopped (or for a set time) | none |
 | extra | Anomaly model (Model C), optional, outside the two-model scope | `ml/anomaly.py`, `ml_core` | yes (`tests/anomaly_host`, 103 checks) | yes | observed: runs on node1 with partial sensor mappings | synthetic/limited real data |
 
-## Supervisor's recorded expectations (3 November 2026 transcript, from the handoff)
+## Supervisor's recorded expectations (3 November 2026 transcript)
 
 | Expectation | Covered by |
 |---|---|
 | Replace the entire ML model over the network | AC-10 |
 | Choose the sensor data that feeds inference independently of the model | `ModelControl SET_INPUTS`, AC-08/AC-09 |
 | Configured command bytes and response lengths instead of a sensor-name driver | AC-03 (`Op` list, no sensor-name code) |
-| A believable use case | cargo-integrity monitoring (`README.md`, `docs/STEP_BY_STEP_GUIDE.md`) |
+| A believable use case | FlexiCargo warehouse monitoring (`README.md`, `docs/demo_guide.md`) |
 | Explain the exact components and how they connect | `docs/architecture.md` |
 | Not confirmed by the supervisor: accelerated vs non-accelerated inference, powered hot-plugging | AC-16 (both images build); hot-plugging is not claimed |
 
-## Handoff section 12 integrity questions
+## Integrity questions
 
-- Existing files reused: none (this folder held only the handoff and the Pico reference); everything is new, FlexiEdgePico informed the rule/REPL/bridge design only.
+- Existing files reused: none (the project started from the written specification only); everything is new, FlexiEdgePico informed the rule/REPL/bridge design only.
 - Toolchain actually used: ESP-IDF v6.1 (`C:\esp\v6.1`), Xtensa GCC 15.2.0, target esp32s3; TFLM = `espressif/esp-tflite-micro` + ESP-NN via the component manager (versions pinned in `dependencies.lock`); nanopb 0.4.9.1.
 - Sensor-name logic in application code: none; acquisition is the generic `Op` interpreter. (`plat_bus.c` implements generic bus primitives only.)
 - Real inference on hardware: observed (see AC-07/08/10); not archived as logs.
-- Open supervisor questions (handoff section 10): still open.
+- Open supervisor questions from the specification: still open.

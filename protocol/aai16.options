@@ -1,4 +1,4 @@
-# Fixed maxima for every variable-length field (handoff section 4.1).
+# Fixed maxima for every variable-length field.
 # These values are part of the wire contract: change them only together with
 # components/config_manager/include/config_limits.h.
 

@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SUITES = ["config_host", "decode_host", "ml_host", "runtime_host", "services_host", "node_host", "client_mqtt", "topics_host", "real_data_host", "shorthand_host", "anomaly_host", "dormant_host"]
+SUITES = ["config_host", "decode_host", "ml_host", "runtime_host", "services_host", "node_host", "client_mqtt", "topics_host", "real_data_host", "shorthand_host", "anomaly_host", "dormant_host", "demo_pack_host"]
 
 
 def run(label, cmd, keep):
@@ -19,7 +19,7 @@ def run(label, cmd, keep):
 def main():
     failed = []
     for s in SUITES:
-        if not run(s, [sys.executable, str(ROOT / "tests" / s / "run.py")], ("checks,", "cases,", "FAIL", "recorded TFLite", "ALL CLIENT", "TOPICS AGREE", "REAL-DATA PATH")):
+        if not run(s, [sys.executable, str(ROOT / "tests" / s / "run.py")], ("checks,", "cases,", "FAIL", "recorded TFLite", "ALL CLIENT", "TOPICS AGREE", "REAL-DATA PATH", "DEMO PACK", "ALL SHORTHAND")):
             failed.append(s)
     if not run("node_client selftest", [sys.executable, str(ROOT / "tools" / "node_client.py"), "selftest"], ("ok ", "FAIL", "skip")):
         failed.append("node_client selftest")

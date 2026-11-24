@@ -422,6 +422,9 @@ Whole sets: `sensor_profiles.py A <gen> --hex` (config A is about 650 hex charac
 
 ## 8. Phase 7 - the demo over MQTT
 
+> The full FlexiCargo demonstration, scene by scene with ready-made MQTTX messages, is in
+> [demo_guide.md](demo_guide.md). This section shows the same features with the command-line client.
+
 Replace `<ip>` with your laptop's IP. Run `listen` in a **second window** to watch the replies:
 ```powershell
 .venv\Scripts\python.exe tools\node_client.py --broker <ip> --node node1 listen --seconds 600
@@ -678,7 +681,7 @@ LD2450 `[x, y, speed]` - MH-Z19 `[ppm]` - RC522 `[card_present, atqa]` - MAX6675
 **Useful numbers:** motion window 64 samples at 50 Hz - environment window 20 samples at 0.5 Hz - max config size 28 KB -
 upload chunk 256-1024 bytes (default 512)
 
-**Files to look at:** `STATUS.md` (what is verified), `docs/requirements_traceability.md` (the acceptance table to fill in),
+**Files to look at:** `docs/project_status.md` (what is verified), `docs/requirements_traceability.md` (the acceptance table to fill in),
 `docs/sensor_profiles.md`, `docs/ml_model_contracts.md`, `docs/mqtt_protobuf_protocol.md`, `docs/demo_and_benchmarks.md`.
 
 ---

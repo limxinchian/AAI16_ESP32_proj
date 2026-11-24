@@ -1,6 +1,6 @@
 # ML model contracts (two agreed models plus one optional extra)
 
-Per handoff §5 and the team decision: **Model A - Motion classification** and **Model B - Environmental classification**.
+Per the project specification and the team decision: **Model A - Motion classification** and **Model B - Environmental classification**.
 A third, optional **Model C - anomaly detector** was added later as a team extension (see the last section); it is outside the
 original two-model scope and is not required. Details, data provenance and how to retrain: `ml/README.md`.
 

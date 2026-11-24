@@ -1,0 +1,25 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "trig": 4,
+   "echo": 5,
+   "sensor": "hcsr04",
+   "period_ms": 100
+  },
+  {
+   "cs": 10,
+   "sclk": 12,
+   "mosi": 11,
+   "miso": 13,
+   "sensor": "max6675",
+   "period_ms": 250
+  },
+  {
+   "sda": 8,
+   "scl": 9,
+   "sensor": "gy511",
+   "enabled": false
+  }
+ ]
+}

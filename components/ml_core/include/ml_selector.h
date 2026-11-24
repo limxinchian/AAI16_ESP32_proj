@@ -1,6 +1,6 @@
 #pragma once
 /* ML input selector: maps sensor values onto a model's input channels, rejects incompatible
- * mappings BEFORE inference (handoff 5.4), assembles time-ordered windows and produces features.
+ * mappings BEFORE inference, assembles time-ordered windows and produces features.
  *
  * Policy when a mapping becomes invalid later (e.g. the I2C sensor is swapped GY-511 -> BME280 while
  * the motion model is active): the model and the last mapping are kept, inference is SUSPENDED with a

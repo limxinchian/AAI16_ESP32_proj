@@ -1,4 +1,4 @@
-# Builds for esp32s3 with ESP-IDF 6.1 (clean build verified); logic is host-tested under tests/ - see STATUS.md.
+# Builds for esp32s3 with ESP-IDF 6.1; the logic is host-tested under tests/ (see README.md, Testing).
 idf_component_register(
     SRCS "rule_engine.c" "bridge.c" "diag.c" "repl.c"
     INCLUDE_DIRS "include"

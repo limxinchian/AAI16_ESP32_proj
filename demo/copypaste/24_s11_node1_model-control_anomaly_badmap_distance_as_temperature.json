@@ -1,0 +1,12 @@
+{
+ "generation": 2000008,
+ "action": "ACTION_SET_INPUTS",
+ "kind": "MODEL_ANOMALY",
+ "inputs": [
+  {
+   "sensor_id": 6,
+   "value_index": 0,
+   "feature_slot": 9
+  }
+ ]
+}

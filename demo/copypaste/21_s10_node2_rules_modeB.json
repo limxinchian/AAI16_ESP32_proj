@@ -1,0 +1,36 @@
+{
+ "generation": "auto",
+ "rules": [
+  {
+   "rule_id": 1,
+   "enabled": true,
+   "vars": [
+    {
+     "sensor_id": 7,
+     "value_index": 0,
+     "stat": "STAT_MEAN",
+     "window": 15
+    }
+   ],
+   "when": [
+    {
+     "op": "CALC_PUSH_REG",
+     "reg": 0
+    },
+    {
+     "op": "CALC_PUSH_CONST",
+     "value": 1200.0
+    },
+    {
+     "op": "CALC_GT"
+    }
+   ],
+   "action": {
+    "type": "RACT_NOTIFY",
+    "text": "VENTILATION_REVIEW_ADVISORY"
+   },
+   "cooldown_ms": 60000,
+   "edge_triggered": false
+  }
+ ]
+}

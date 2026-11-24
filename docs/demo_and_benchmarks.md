@@ -19,7 +19,7 @@ No number in the "measured" tables below is invented: the only figures are ones 
 8. Reboot (`REBOOT`, or power-cycle) and check that the node comes back with its configuration, dormant profiles, rules, bridge and model. This was observed on node1; sensors that a rule started are asleep again after a reboot by design.
 
 Offline rehearsal without hardware: `python tools/node_client.py selftest`, `python tools/run_all_tests.py`,
-`python tools/qemu_session.py` (see STATUS.md).
+`python tools/qemu_session.py` (see docs/project_status.md).
 
 ## Measured in this repository
 

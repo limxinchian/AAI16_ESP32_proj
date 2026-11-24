@@ -1,4 +1,4 @@
-"""Shared code for the two ML tasks (handoff section 5): Motion Model A and Environment Model B.
+"""Shared code for the two ML tasks: Motion Model A and Environment Model B.
 
 !! DATA PROVENANCE: the training data here is SYNTHETIC (generated below), used to bootstrap and
 !! integrate the pipeline. Models trained on it have NOT been validated on real GY-511 / DHT22 /

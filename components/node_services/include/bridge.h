@@ -1,5 +1,5 @@
 #pragma once
-/* Node-to-node bridge (handoff 6.3): another node's physical sensor appears locally as a VIRTUAL
+/* Node-to-node bridge: another node's physical sensor appears locally as a VIRTUAL
  * sensor (id 128..255) with its own freshness policy. Rules, the ML selector and telemetry then treat
  * it like any local sensor.
  *

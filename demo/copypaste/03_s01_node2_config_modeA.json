@@ -1,0 +1,21 @@
+{
+ "generation": "auto",
+ "sensors": [
+  {
+   "cs": 14,
+   "sclk": 12,
+   "mosi": 11,
+   "miso": 13,
+   "sensor": "rc522",
+   "period_ms": 200
+  },
+  {
+   "port": 1,
+   "tx": 17,
+   "rx": 18,
+   "sensor": "ld2450",
+   "dormant": true,
+   "period_ms": 100
+  }
+ ]
+}

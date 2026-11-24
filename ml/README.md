@@ -7,7 +7,7 @@
 > exactly like the node does with `eval_real_anomaly.py`. The real-data version covers temperature, humidity, pressure and
 > equipment temperature; the other slots stay synthetic. Recordings come from `tools/record_slot_data.py`.
 
-The two original models (handoff §5):
+The two original models:
 
 | | Model A - Motion | Model B - Environment |
 |---|---|---|
